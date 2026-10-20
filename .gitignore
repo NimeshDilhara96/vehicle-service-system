@@ -47,4 +47,5 @@ Thumbs.db
 .eslintcache
 .cache/
 *.tgz
+!packages/*.tgz
 
