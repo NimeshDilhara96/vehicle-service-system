@@ -42,7 +42,7 @@ function AuthLayout({ title, subtitle, footer, children }) {
 
       {/* Form panel */}
       <div className="flex flex-1 rounded-t-[1.75rem] bg-white lg:w-1/2 lg:items-center lg:justify-center lg:rounded-none lg:bg-[#f8f9fa] lg:px-10 lg:py-12">
-        <div className="w-full px-6 pt-7 pb-10 sm:px-10 lg:max-w-[420px] lg:rounded-2xl lg:border lg:border-gray-200/90 lg:bg-white lg:p-9 lg:shadow-xs [&_label]:text-xs [&_label]:font-semibold [&_label]:text-[#13294b]">
+        <div className="w-full px-6 pt-7 pb-10 sm:px-10 lg:max-w-105 lg:rounded-2xl lg:border lg:border-gray-200/90 lg:bg-white lg:p-9 lg:shadow-xs [&_label]:text-xs [&_label]:font-semibold [&_label]:text-[#13294b]">
           <div className="mb-6">
             <h2 className="text-xl font-bold tracking-tight text-[#13294b] lg:text-2xl">
               {title}
