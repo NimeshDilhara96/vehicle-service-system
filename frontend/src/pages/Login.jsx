@@ -1,10 +1,16 @@
 import { useState } from "react";
 import { useNavigate, Link } from "react-router-dom";
 import { useAuth } from "../context/AuthContext";
-import Card from "../components/ui/Card";
+import AuthLayout from "../components/ui/AuthLayout";
 import Input from "../components/ui/Input";
 import Button from "../components/ui/Button";
 import Alert from "../components/ui/Alert";
+
+// Styling overrides for the shared UI components (theme: navy + orange)
+const inputClass =
+  "py-3! rounded-lg! border-gray-300! focus:border-orange-700! focus:ring-orange-700!";
+const buttonClass =
+  "py-3! font-semibold! bg-orange-700! hover:bg-orange-800! text-white!";
 
 function Login() {
   const [email, setEmail] = useState("");
@@ -34,38 +40,49 @@ function Login() {
   };
 
   return (
-    <div className="flex min-h-screen items-center justify-center bg-gray-50 px-4">
-      <Card
-        title="Welcome back"
-        subtitle="Sign in to your account"
-        footer={
-          <>
-            Don&apos;t have an account?{" "}
-            <Link to="/register" className="font-medium text-gray-900 hover:underline">
-              Register
-            </Link>
-          </>
-        }
-      >
-        <form onSubmit={handleSubmit} className="space-y-4">
+    <AuthLayout
+      title={
+        <>
+          <span className="lg:hidden">Log in</span>
+          <span className="hidden lg:inline">Welcome back</span>
+        </>
+      }
+      subtitle="Log in to book and track your service."
+      footer={
+        <>
+          <span className="lg:hidden">New here?</span>
+          <span className="hidden lg:inline">Don&apos;t have an account?</span>{" "}
+          <Link
+            to="/register"
+            className="font-semibold text-[#13294b] hover:text-orange-700 hover:underline"
+          >
+            <span className="lg:hidden">Create an account</span>
+            <span className="hidden lg:inline">Sign Up</span>
+          </Link>
+        </>
+      }
+    >
+      <form onSubmit={handleSubmit} className="space-y-4">
           <Alert type="error">{error}</Alert>
 
           <Input
             id="email"
-            label="Email"
+            label="Email / Username"
             type="email"
             placeholder="you@example.com"
             value={email}
             onChange={(e) => setEmail(e.target.value)}
             autoComplete="email"
             required
+            className={inputClass}
           />
 
           <Input
             id="password"
             label="Password"
             type={showPassword ? "text" : "password"}
-            placeholder="••••••••"
+            placeholder="Enter your password"
+            className={inputClass}
             value={password}
             onChange={(e) => setPassword(e.target.value)}
             autoComplete="current-password"
@@ -117,12 +134,17 @@ function Login() {
             }
           />
 
-          <Button type="submit" loading={loading}>
-            Sign in
+          <div className="-mt-1 flex justify-end">
+            <span className="cursor-pointer text-xs font-semibold text-orange-700 hover:underline">
+              Forgot Password?
+            </span>
+          </div>
+
+          <Button type="submit" loading={loading} className={buttonClass}>
+            Log In
           </Button>
-        </form>
-      </Card>
-    </div>
+      </form>
+    </AuthLayout>
   );
 }
 

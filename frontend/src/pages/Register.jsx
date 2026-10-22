@@ -1,10 +1,16 @@
 import { useState } from "react";
 import { useNavigate, Link } from "react-router-dom";
 import { useAuth } from "../context/AuthContext";
-import Card from "../components/ui/Card";
+import AuthLayout from "../components/ui/AuthLayout";
 import Input from "../components/ui/Input";
 import Button from "../components/ui/Button";
 import Alert from "../components/ui/Alert";
+
+// Styling overrides for the shared UI components (theme: navy + orange)
+const inputClass =
+  "py-3! rounded-lg! border-gray-300! focus:border-orange-700! focus:ring-orange-700!";
+const buttonClass =
+  "py-3! font-semibold! bg-orange-700! hover:bg-orange-800! text-white!";
 
 function Register() {
   const [form, setForm] = useState({
@@ -42,20 +48,27 @@ function Register() {
   };
 
   return (
-    <div className="flex min-h-screen items-center justify-center bg-gray-50 px-4">
-      <Card
-        title="Create account"
-        subtitle="Register to get started"
-        footer={
-          <>
-            Already have an account?{" "}
-            <Link to="/login" className="font-medium text-gray-900 hover:underline">
-              Sign in
-            </Link>
-          </>
-        }
-      >
-        <form onSubmit={handleSubmit} className="space-y-4">
+    <AuthLayout
+      title={
+        <>
+          <span className="lg:hidden">Sign up</span>
+          <span className="hidden lg:inline">Create account</span>
+        </>
+      }
+      subtitle="Register to book and track your service."
+      footer={
+        <>
+          Already have an account?{" "}
+          <Link
+            to="/login"
+            className="font-semibold text-[#13294b] hover:text-orange-700 hover:underline"
+          >
+            Log In
+          </Link>
+        </>
+      }
+    >
+      <form onSubmit={handleSubmit} className="space-y-4">
           <Alert type="error">{error}</Alert>
 
           <Input
@@ -68,6 +81,7 @@ function Register() {
             onChange={handleChange}
             autoComplete="name"
             required
+            className={inputClass}
           />
 
           <Input
@@ -80,6 +94,7 @@ function Register() {
             onChange={handleChange}
             autoComplete="email"
             required
+            className={inputClass}
           />
 
           <Input
@@ -92,6 +107,7 @@ function Register() {
             onChange={handleChange}
             autoComplete="tel"
             required
+            className={inputClass}
           />
 
           <Input
@@ -99,7 +115,8 @@ function Register() {
             name="password"
             label="Password"
             type={showPassword ? "text" : "password"}
-            placeholder="••••••••"
+            placeholder="Create a password"
+            className={inputClass}
             value={form.password}
             onChange={handleChange}
             autoComplete="new-password"
@@ -151,12 +168,11 @@ function Register() {
             }
           />
 
-          <Button type="submit" loading={loading}>
+          <Button type="submit" loading={loading} className={buttonClass}>
             Create account
           </Button>
-        </form>
-      </Card>
-    </div>
+      </form>
+    </AuthLayout>
   );
 }
 
