@@ -12,12 +12,18 @@ const inputClass =
 const buttonClass =
   "py-3! font-semibold! bg-orange-700! hover:bg-orange-800! text-white!";
 
+const vehicleTypes = ["Car", "Van", "SUV", "Jeep", "Crew Cab", "Other"];
+
 function Register() {
   const [form, setForm] = useState({
     name: "",
     email: "",
     password: "",
     contactNo: "",
+    registrationNo: "",
+    vehicleType: "Car",
+    brand: "",
+    modelName: "",
   });
   const [showPassword, setShowPassword] = useState(false);
   const [error, setError] = useState("");
@@ -167,6 +173,77 @@ function Register() {
               </button>
             }
           />
+
+          <div className="pt-2 border-t border-gray-200">
+            <p className="mb-3 text-xs font-bold uppercase tracking-wider text-[#13294b]">
+              First Vehicle Details
+            </p>
+
+            <div className="space-y-4">
+              <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+                <Input
+                  id="registrationNo"
+                  name="registrationNo"
+                  label="Registration No."
+                  type="text"
+                  placeholder="CAB-1234"
+                  value={form.registrationNo}
+                  onChange={handleChange}
+                  required
+                  className={`${inputClass} uppercase`}
+                />
+
+                <div className="space-y-1.5">
+                  <label
+                    htmlFor="vehicleType"
+                    className="block text-sm font-medium text-gray-700"
+                  >
+                    Vehicle Type
+                  </label>
+                  <select
+                    id="vehicleType"
+                    name="vehicleType"
+                    value={form.vehicleType}
+                    onChange={handleChange}
+                    required
+                    className={`w-full rounded-lg border border-gray-300 bg-white px-3 py-3 text-sm text-gray-900 outline-none transition focus:border-orange-700 focus:ring-1 focus:ring-orange-700`}
+                  >
+                    {vehicleTypes.map((type) => (
+                      <option key={type} value={type}>
+                        {type}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              </div>
+
+              <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+                <Input
+                  id="brand"
+                  name="brand"
+                  label="Brand"
+                  type="text"
+                  placeholder="Toyota"
+                  value={form.brand}
+                  onChange={handleChange}
+                  required
+                  className={inputClass}
+                />
+
+                <Input
+                  id="modelName"
+                  name="modelName"
+                  label="Model"
+                  type="text"
+                  placeholder="Corolla"
+                  value={form.modelName}
+                  onChange={handleChange}
+                  required
+                  className={inputClass}
+                />
+              </div>
+            </div>
+          </div>
 
           <Button type="submit" loading={loading} className={buttonClass}>
             Create account

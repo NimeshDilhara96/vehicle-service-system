@@ -1,8 +1,10 @@
+const mongoose = require("mongoose");
 const User = require("../models/User");
+const Vehicle = require("../models/Vehicle");
 const jwt = require("jsonwebtoken");
 
 // Helper to issue JWT and set secure HttpOnly cookie
-const sendTokenResponse = (user, statusCode, res) => {
+const sendTokenResponse = (user, statusCode, res, vehicle = null) => {
   const token = jwt.sign(
     { id: user._id, role: user.role },
     process.env.JWT_SECRET,
@@ -17,42 +19,119 @@ const sendTokenResponse = (user, statusCode, res) => {
     sameSite: "strict",
   };
 
+  const responsePayload = {
+    success: true,
+    user: {
+      id: user._id,
+      name: user.name,
+      email: user.email,
+      role: user.role,
+    },
+  };
+
+  if (vehicle) {
+    responsePayload.vehicle = vehicle;
+  }
+
   res
     .status(statusCode)
     .cookie("token", token, cookieOptions)
-    .json({
-      success: true,
-      user: {
-        id: user._id,
-        name: user.name,
-        email: user.email,
-        role: user.role,
-      },
-    });
+    .json(responsePayload);
 };
 
-// Register customer
+// Register customer and their first vehicle in a single atomic DB transaction
 exports.register = async (req, res, next) => {
+  const session = await mongoose.startSession();
+  session.startTransaction();
+
   try {
-    const { name, email, password, contactNo } = req.body;
-
-    const existingUser = await User.findOne({ email });
-    if (existingUser) {
-      return res.status(400).json({ message: "Email is already registered." });
-    }
-
-    // Always defaults to Customer role for public registration
-    const user = await User.create({
+    const {
       name,
       email,
       password,
       contactNo,
-      role: "Customer",
-    });
+      registrationNo,
+      vehicleType,
+      brand,
+      modelName,
+    } = req.body;
 
-    sendTokenResponse(user, 201, res);
+    const existingUser = await User.findOne({ email }).session(session);
+    if (existingUser) {
+      await session.abortTransaction();
+      return res.status(400).json({ message: "Email is already registered." });
+    }
+
+    if (!registrationNo || !registrationNo.trim()) {
+      await session.abortTransaction();
+      return res
+        .status(400)
+        .json({ message: "Vehicle registration number is required." });
+    }
+
+    const normalizedRegNo = registrationNo.trim().toUpperCase();
+
+    // Always defaults to Customer role for public registration
+    const [user] = await User.create(
+      [
+        {
+          name,
+          email,
+          password,
+          contactNo,
+          role: "Customer",
+        },
+      ],
+      { session },
+    );
+
+    const existingVehicle = await Vehicle.findOne({
+      registrationNo: normalizedRegNo,
+    }).session(session);
+    if (existingVehicle) {
+      // Roll back the newly created User if the vehicle is already registered
+      await session.abortTransaction();
+      return res.status(400).json({
+        message: "A vehicle with this registration number already exists.",
+      });
+    }
+
+    const [vehicle] = await Vehicle.create(
+      [
+        {
+          customerId: user._id,
+          registrationNo: normalizedRegNo,
+          vehicleType: vehicleType || "Car",
+          brand,
+          modelName,
+        },
+      ],
+      { session },
+    );
+
+    await session.commitTransaction();
+
+    sendTokenResponse(user, 201, res, vehicle);
   } catch (error) {
+    await session.abortTransaction();
+
+    if (error.code === 11000) {
+      const duplicateField = Object.keys(error.keyPattern || {})[0];
+      const message =
+        duplicateField === "registrationNo"
+          ? "A vehicle with this registration number already exists."
+          : "Email is already registered.";
+      return res.status(400).json({ message });
+    }
+
+    if (error.name === "ValidationError") {
+      const messages = Object.values(error.errors).map((val) => val.message);
+      return res.status(400).json({ message: messages.join(", ") });
+    }
+
     next(error);
+  } finally {
+    session.endSession();
   }
 };
 
