@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { useNavigate, Link } from "react-router-dom";
 import { useAuth } from "../context/AuthContext";
+import api from "../services/api";
 import AuthLayout from "../components/ui/AuthLayout";
 import Input from "../components/ui/Input";
 import Button from "../components/ui/Button";
@@ -13,6 +14,10 @@ const buttonClass =
   "py-3! font-semibold! bg-orange-700! hover:bg-orange-800! text-white!";
 
 const vehicleTypes = ["Car", "Van", "SUV", "Jeep", "Crew Cab", "Other"];
+
+const MOBILE_REGEX = /^(?:0|\+94)7\d{8}$/;
+const VEHICLE_REG_REGEX =
+  /^(?:[A-Z]{2}[\s-]?)?(?:[A-Z]{2,3}|\d{1,3})[\s-]?\d{4}$/;
 
 function Register() {
   const [step, setStep] = useState(1);
@@ -36,19 +41,58 @@ function Register() {
     setForm({ ...form, [e.target.name]: e.target.value });
   };
 
-  const handleNextStep = (e) => {
+  const handleNextStep = async (e) => {
     e.preventDefault();
     setError("");
-    setStep(2);
+
+    const trimmedContact = form.contactNo.trim();
+    if (!MOBILE_REGEX.test(trimmedContact)) {
+      setError(
+        "Invalid mobile number format. Please use 07XXXXXXXX or +947XXXXXXXX.",
+      );
+      return;
+    }
+
+    setLoading(true);
+    try {
+      const res = await api.post("/auth/check-availability", {
+        email: form.email.trim(),
+        contactNo: trimmedContact,
+      });
+
+      if (res.data.success) {
+        setStep(2);
+      }
+    } catch (err) {
+      setError(
+        err.response?.data?.message ||
+          "Unable to verify details. Please try again.",
+      );
+    } finally {
+      setLoading(false);
+    }
   };
 
   const handleSubmit = async (e) => {
     e.preventDefault();
     setError("");
+
+    const normalizedRegNo = form.registrationNo.trim().toUpperCase();
+    if (!VEHICLE_REG_REGEX.test(normalizedRegNo)) {
+      setError(
+        "Invalid vehicle registration number format (e.g., CAB-1234, AB-1234, 65-1234).",
+      );
+      return;
+    }
+
     setLoading(true);
 
     try {
-      const data = await register(form);
+      const data = await register({
+        ...form,
+        contactNo: form.contactNo.trim(),
+        registrationNo: normalizedRegNo,
+      });
 
       if (data.success) {
         navigate("/user-dashboard");
@@ -56,7 +100,12 @@ function Register() {
     } catch (err) {
       const message = err.response?.data?.message || "Registration failed";
       setError(message);
-      if (message.toLowerCase().includes("email")) {
+      const lowerMsg = message.toLowerCase();
+      if (
+        lowerMsg.includes("email") ||
+        lowerMsg.includes("contact") ||
+        lowerMsg.includes("mobile")
+      ) {
         setStep(1);
       }
     } finally {
@@ -218,7 +267,7 @@ function Register() {
               }
             />
 
-            <Button type="submit" className={buttonClass}>
+            <Button type="submit" loading={loading} className={buttonClass}>
               Next
             </Button>
           </>

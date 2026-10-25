@@ -39,6 +39,48 @@ const sendTokenResponse = (user, statusCode, res, vehicle = null) => {
     .json(responsePayload);
 };
 
+// Validation regex for Sri Lankan mobile numbers (e.g., 0771234567 or +94771234567)
+const MOBILE_REGEX = /^(?:0|\+94)7\d{8}$/;
+
+// Validation regex for Sri Lankan vehicle registration numbers (e.g., CAB-1234, AB-1234, WP CAB-1234, 65-1234)
+const VEHICLE_REG_REGEX =
+  /^(?:[A-Z]{2}[\s-]?)?(?:[A-Z]{2,3}|\d{1,3})[\s-]?\d{4}$/;
+
+// Pre-check email and mobile number availability before moving to Step 2 of registration
+exports.checkAvailability = async (req, res, next) => {
+  try {
+    const { email, contactNo } = req.body;
+
+    const normalizedEmail = email ? email.trim().toLowerCase() : "";
+    const normalizedContactNo = contactNo ? contactNo.trim() : "";
+
+    if (!MOBILE_REGEX.test(normalizedContactNo)) {
+      return res.status(400).json({
+        message:
+          "Invalid mobile number format. Use 07XXXXXXXX or +947XXXXXXXX.",
+      });
+    }
+
+    const existingUser = await User.findOne({ email: normalizedEmail });
+    if (existingUser) {
+      return res.status(400).json({ message: "Email is already registered." });
+    }
+
+    const existingContact = await User.findOne({
+      contactNo: normalizedContactNo,
+    });
+    if (existingContact) {
+      return res
+        .status(400)
+        .json({ message: "Contact number is already registered." });
+    }
+
+    res.status(200).json({ success: true });
+  } catch (error) {
+    next(error);
+  }
+};
+
 // Register customer and their first vehicle in a single atomic DB transaction
 exports.register = async (req, res, next) => {
   const session = await mongoose.startSession();
@@ -56,10 +98,29 @@ exports.register = async (req, res, next) => {
       modelName,
     } = req.body;
 
+    const normalizedContactNo = contactNo ? contactNo.trim() : "";
+    if (!MOBILE_REGEX.test(normalizedContactNo)) {
+      await session.abortTransaction();
+      return res.status(400).json({
+        message:
+          "Invalid mobile number format. Use 07XXXXXXXX or +947XXXXXXXX.",
+      });
+    }
+
     const existingUser = await User.findOne({ email }).session(session);
     if (existingUser) {
       await session.abortTransaction();
       return res.status(400).json({ message: "Email is already registered." });
+    }
+
+    const existingContact = await User.findOne({
+      contactNo: normalizedContactNo,
+    }).session(session);
+    if (existingContact) {
+      await session.abortTransaction();
+      return res
+        .status(400)
+        .json({ message: "Contact number is already registered." });
     }
 
     if (!registrationNo || !registrationNo.trim()) {
@@ -70,6 +131,13 @@ exports.register = async (req, res, next) => {
     }
 
     const normalizedRegNo = registrationNo.trim().toUpperCase();
+    if (!VEHICLE_REG_REGEX.test(normalizedRegNo)) {
+      await session.abortTransaction();
+      return res.status(400).json({
+        message:
+          "Invalid vehicle registration number format (e.g., CAB-1234, AB-1234, 65-1234).",
+      });
+    }
 
     // Always defaults to Customer role for public registration
     const [user] = await User.create(
@@ -78,7 +146,7 @@ exports.register = async (req, res, next) => {
           name,
           email,
           password,
-          contactNo,
+          contactNo: normalizedContactNo,
           role: "Customer",
         },
       ],
@@ -120,7 +188,9 @@ exports.register = async (req, res, next) => {
       const message =
         duplicateField === "registrationNo"
           ? "A vehicle with this registration number already exists."
-          : "Email is already registered.";
+          : duplicateField === "contactNo"
+            ? "Contact number is already registered."
+            : "Email is already registered.";
       return res.status(400).json({ message });
     }
 

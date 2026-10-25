@@ -17,6 +17,11 @@ const authLimiter = rateLimit({
   },
 });
 
+router.post(
+  "/check-availability",
+  authLimiter,
+  authController.checkAvailability,
+);
 router.post("/register", authLimiter, authController.register);
 router.post("/login", authLimiter, authController.login);
 router.post("/logout", authController.logout);
