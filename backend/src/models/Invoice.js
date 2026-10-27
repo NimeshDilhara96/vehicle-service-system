@@ -1,16 +1,23 @@
+// backend/src/models/Invoice.js
 const mongoose = require("mongoose");
 
 const invoiceSchema = new mongoose.Schema(
   {
+    appointmentId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "Appointment",
+      required: true,
+      unique: true, // Each appointment can have only one invoice
+      index: true,
+    },
+    serviceId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "Service",
+      default: null, // after service is completed, this will be set to the service ID
+    },
     customerId: {
       type: mongoose.Schema.Types.ObjectId,
       ref: "User",
-      required: true,
-      index: true,
-    },
-    vehicleId: {
-      type: mongoose.Schema.Types.ObjectId,
-      ref: "Vehicle",
       required: true,
       index: true,
     },
@@ -20,23 +27,43 @@ const invoiceSchema = new mongoose.Schema(
       brand: { type: String },
       modelName: { type: String },
     },
-    serviceId: {
-      type: mongoose.Schema.Types.ObjectId,
-      ref: "Service",
+    packageCharge: {
+      type: Number,
+      required: true,
+      min: 0,
+    },
+    pickupDeliveryCharge: {
+      type: Number,
+      required: true,
+      min: 0,
+      default: 0,
+    },
+    additionalWorkCharge: {
+      type: Number,
+      required: true,
+      min: 0,
+      default: 0,
     },
     totalAmount: {
       type: Number,
       required: true,
       min: 0,
     },
+    invoiceStage: {
+      type: String,
+      enum: ["Initial Estimate", "Finalized"],
+      default: "Initial Estimate",
+    },
     paymentStatus: {
       type: String,
-      enum: ["Pending", "Paid", "Cancelled"],
-      default: "Pending",
+      enum: ["Unpaid", "Paid on Delivery"],
+      default: "Unpaid",
     },
   },
-  { timestamps: true },
+  {
+    timestamps: true,
+    optimisticConcurrency: true,
+  },
 );
 
 module.exports = mongoose.model("Invoice", invoiceSchema);
-

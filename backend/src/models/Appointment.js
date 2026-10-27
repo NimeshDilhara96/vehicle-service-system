@@ -6,7 +6,7 @@ const appointmentSchema = new mongoose.Schema(
       type: mongoose.Schema.Types.ObjectId,
       ref: "User",
       required: true,
-      index: true,
+      index: true, // Create an index on customerId for faster queries
     },
     vehicleId: {
       type: mongoose.Schema.Types.ObjectId,
@@ -14,33 +14,46 @@ const appointmentSchema = new mongoose.Schema(
       required: true,
       index: true,
     },
+    // Snapshot of vehicle details at the time of booking to prevent issues if vehicle details change later
     vehicleSnapshot: {
       registrationNo: { type: String, required: true },
       vehicleType: { type: String, required: true },
-      brand: { type: String },
-      modelName: { type: String },
+      brand: { type: String, default: "" },
+      modelName: { type: String, default: "" },
     },
-    servicePackage: {
-      type: String,
+    packageId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "ServicePackage",
       required: true,
+    },
+    serviceDate: {
+      type: Date,
+      required: [true, "Service date is required"],
+      index: true,
+    },
+    serviceTime: {
+      type: String,
+      required: [true, "Service time slot is required"],
       trim: true,
     },
-    appointmentDate: {
-      type: Date,
-      required: true,
+    requiresPickup: {
+      type: Boolean,
+      default: false,
+    },
+    pickupLocation: {
+      address: { type: String, trim: true },
+      coordinates: { type: [Number] }, // [lat, lng]
     },
     status: {
       type: String,
       enum: ["Pending", "Confirmed", "In Progress", "Completed", "Cancelled"],
       default: "Pending",
     },
-    notes: {
-      type: String,
-      trim: true,
-    },
   },
-  { timestamps: true },
+  {
+    timestamps: true,
+    optimisticConcurrency: true, // Enable optimistic concurrency control to prevent race conditions during updates
+  },
 );
 
 module.exports = mongoose.model("Appointment", appointmentSchema);
-
