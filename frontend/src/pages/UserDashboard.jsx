@@ -4,6 +4,7 @@ import { SmartMap } from "smartmap-pro";
 import { useAuth } from "../context/AuthContext";
 import api from "../services/api";
 import Vehicle from "./Vehicle";
+import Booking from "./Booking";
 
 const navItems = [
   { label: "Dashboard" },
@@ -15,18 +16,79 @@ const navItems = [
   { label: "Profile" },
 ];
 
-const serviceSteps = [
-  { label: "Vehicle Received", status: "done" },
-  { label: "Inspection", status: "done" },
-  { label: "Service", status: "done" },
-  { label: "Additional Work Approval", status: "current" },
-  { label: "Service Completed", status: "upcoming" },
-  { label: "Ready for Delivery", status: "upcoming" },
+const STEP_LABELS = [
+  "Vehicle Received",
+  "Inspection",
+  "Service",
+  "Additional Work Approval",
+  "Service Completed",
+  "Ready for Delivery",
 ];
+
+function buildProgressFromBooking(booking) {
+  if (!booking || booking.status === "Cancelled") {
+    return {
+      currentStepIndex: -1,
+      badgeText: booking?.status === "Cancelled" ? "Cancelled" : "No Active Booking",
+      steps: STEP_LABELS.map((label) => ({ label, status: "upcoming" })),
+    };
+  }
+
+  // If a detailed Workshop Service record exists, use its exact 6-step stage
+  let activeIndex = -1;
+  if (booking.service?.status) {
+    activeIndex = STEP_LABELS.indexOf(booking.service.status);
+  }
+
+  // Otherwise derive step progress from Appointment status
+  if (activeIndex === -1) {
+    switch (booking.status) {
+      case "Pending":
+      case "Confirmed":
+        activeIndex = 0; // Step 1: Vehicle Received / Booking Scheduled
+        break;
+      case "In Progress":
+        activeIndex = 2; // Step 3: Service
+        break;
+      case "Completed":
+        activeIndex = 5; // Step 6: Ready for Delivery / Completed
+        break;
+      default:
+        activeIndex = 0;
+    }
+  }
+
+  const isFullyCompleted = booking.status === "Completed";
+
+  const steps = STEP_LABELS.map((label, idx) => {
+    if (isFullyCompleted || idx < activeIndex) {
+      return { label, status: "done" };
+    }
+    if (idx === activeIndex) {
+      return { label, status: "current" };
+    }
+    return { label, status: "upcoming" };
+  });
+
+  const badgeText = booking.service?.status
+    ? booking.service.status
+    : booking.status === "Pending"
+      ? "Booking Pending"
+      : booking.status === "Confirmed"
+        ? "Booking Confirmed"
+        : STEP_LABELS[activeIndex];
+
+  return {
+    currentStepIndex: activeIndex,
+    badgeText,
+    steps,
+  };
+}
 
 function UserDashboard() {
   const [activeTab, setActiveTab] = useState("Dashboard");
   const [vehicles, setVehicles] = useState([]);
+  const [bookings, setBookings] = useState([]);
   const [apiMessage, setApiMessage] = useState("");
   const [routeCoords, setRouteCoords] = useState(null);
   const [resetCount, setResetCount] = useState(0);
@@ -51,6 +113,15 @@ function UserDashboard() {
         }
       })
       .catch(() => {});
+
+    api
+      .get("/appointments")
+      .then((res) => {
+        if (res.data.success) {
+          setBookings(res.data.appointments || []);
+        }
+      })
+      .catch(() => {});
   }, []);
 
   const handleLogout = async () => {
@@ -69,10 +140,33 @@ function UserDashboard() {
   };
 
   const displayName = user?.name || "John";
+
+  // Pick the most recent non-cancelled booking (or latest booking)
+  const activeBooking =
+    bookings.find((b) => b.status !== "Cancelled") || bookings[0] || null;
+
   const primaryVehicle = vehicles[0];
-  const primaryVehicleLabel = primaryVehicle
-    ? `${[primaryVehicle.brand, primaryVehicle.modelName].filter(Boolean).join(" ") || primaryVehicle.vehicleType} · ${primaryVehicle.registrationNo}`
-    : "Toyota Corolla · ABC 1234";
+  const bookedVehicleSnapshot = activeBooking?.vehicleSnapshot;
+
+  const vehicleHeaderLabel = bookedVehicleSnapshot
+    ? `${[bookedVehicleSnapshot.brand, bookedVehicleSnapshot.modelName].filter(Boolean).join(" ") || bookedVehicleSnapshot.vehicleType} · ${bookedVehicleSnapshot.registrationNo}`
+    : primaryVehicle
+      ? `${[primaryVehicle.brand, primaryVehicle.modelName].filter(Boolean).join(" ") || primaryVehicle.vehicleType} · ${primaryVehicle.registrationNo}`
+      : "No Vehicle Registered";
+
+  const formattedBookingDate = activeBooking?.serviceDate
+    ? new Date(activeBooking.serviceDate).toLocaleDateString("en-GB", {
+        day: "2-digit",
+        month: "short",
+        year: "numeric",
+      })
+    : null;
+
+  const packageName =
+    activeBooking?.packageId?.packageName || "Service Package";
+
+  const { currentStepIndex, badgeText, steps: serviceSteps } =
+    buildProgressFromBooking(activeBooking);
 
   return (
     <div className="flex min-h-screen flex-col bg-[#f8f9fa] lg:flex-row">
@@ -137,6 +231,12 @@ function UserDashboard() {
         <div className="mx-auto max-w-5xl space-y-4 lg:space-y-5">
           {activeTab === "My Vehicles" ? (
             <Vehicle onVehiclesLoaded={setVehicles} />
+          ) : activeTab === "My Bookings" || activeTab === "Book a Service" ? (
+            <Booking
+              initialTab={activeTab === "Book a Service" ? "new" : "list"}
+              onNavigateToVehicles={() => setActiveTab("My Vehicles")}
+              onBookingsChange={setBookings}
+            />
           ) : (
             <>
               {/* Desktop Greeting Header */}
@@ -162,6 +262,7 @@ function UserDashboard() {
                   </button>
                   <button
                     type="button"
+                    onClick={() => setActiveTab("Book a Service")}
                     className="rounded-lg bg-[#13294b] px-5 py-2.5 text-xs font-semibold text-white transition hover:bg-[#1a3660]"
                   >
                     Book a Service
@@ -169,25 +270,41 @@ function UserDashboard() {
                 </div>
               </div>
 
-              {/* Vehicle Progress Card */}
+              {/* Vehicle Progress Card (Dynamically Updated from Customer Booking) */}
               <section className="rounded-2xl border border-gray-200 bg-white p-4 shadow-2xs sm:p-6">
                 <div className="flex items-start justify-between gap-2">
                   <div>
                     <h2 className="text-sm font-bold text-[#13294b] sm:text-base">
-                      {primaryVehicleLabel}
+                      {vehicleHeaderLabel}
                     </h2>
-                    <p className="mt-0.5 text-xs text-slate-500 lg:hidden">
-                      Full Service · 15 Aug 2026
-                    </p>
-                    <p className="mt-0.5 hidden text-xs text-slate-500 lg:block">
-                      Full Service Package · 15 Aug 2026 · 09:00 AM
-                    </p>
+                    {activeBooking ? (
+                      <>
+                        <p className="mt-0.5 text-xs text-slate-500 lg:hidden">
+                          {packageName} · {formattedBookingDate}
+                        </p>
+                        <p className="mt-0.5 hidden text-xs text-slate-500 lg:block">
+                          {packageName} · {formattedBookingDate} ·{" "}
+                          {activeBooking.serviceTime}
+                          {activeBooking.invoice?.totalAmount
+                            ? ` · Est. Rs. ${activeBooking.invoice.totalAmount.toLocaleString()}`
+                            : ""}
+                        </p>
+                      </>
+                    ) : (
+                      <p className="mt-0.5 text-xs text-slate-500">
+                        No active service booking yet — book a service to track
+                        progress here.
+                      </p>
+                    )}
                   </div>
-                  <span className="shrink-0 rounded-full bg-[#fef3e2] px-3 py-1 text-[11px] font-semibold text-orange-800">
-                    <span className="lg:hidden">Approval needed</span>
-                    <span className="hidden lg:inline">
-                      Additional Work Approval
-                    </span>
+                  <span
+                    className={`shrink-0 rounded-full px-3 py-1 text-[11px] font-semibold ${
+                      activeBooking
+                        ? "bg-[#fef3e2] text-orange-800"
+                        : "bg-slate-100 text-slate-600"
+                    }`}
+                  >
+                    {badgeText}
                   </span>
                 </div>
 
@@ -223,7 +340,9 @@ function UserDashboard() {
                 </div>
 
                 <p className="mt-2.5 text-xs text-slate-500 lg:hidden">
-                  Step 4 of 6 · Additional Work Approval
+                  {activeBooking && currentStepIndex >= 0
+                    ? `Step ${currentStepIndex + 1} of 6 · ${STEP_LABELS[currentStepIndex]}`
+                    : "Step 0 of 6 · Awaiting Booking"}
                 </p>
               </section>
 
@@ -263,6 +382,7 @@ function UserDashboard() {
 
                       <SmartMap
                         resetTrigger={resetCount}
+                        shopCoords={[6.9271, 79.8612]}
                         mode="routing"
                         theme="light"
                         showSearchBox={true}
@@ -286,8 +406,12 @@ function UserDashboard() {
                     </div>
                   ) : (
                     <div className="mt-3 hidden items-center justify-between text-xs text-slate-500 lg:flex">
-                      <span>Pickup: No. 25, Main Road, Colombo 05</span>
-                      <span>Service Centre</span>
+                      <span>
+                        Pickup:{" "}
+                        {activeBooking?.pickupLocation?.address ||
+                          "Workshop Drop-off (Colombo)"}
+                      </span>
+                      <span>Main Service Centre, Colombo</span>
                     </div>
                   )}
                 </section>
@@ -398,7 +522,12 @@ function UserDashboard() {
         </button>
         <button
           type="button"
-          className="font-medium text-slate-500 hover:text-[#13294b]"
+          onClick={() => setActiveTab("My Bookings")}
+          className={
+            activeTab === "My Bookings" || activeTab === "Book a Service"
+              ? "font-semibold text-orange-700"
+              : "font-medium text-slate-500 hover:text-[#13294b]"
+          }
         >
           Bookings
         </button>
