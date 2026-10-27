@@ -22,8 +22,10 @@ exports.registerVehicle = async (req, res, next) => {
       });
     }
 
+    // Only check active (non-deleted) vehicles so a re-sold vehicle number can be registered by a new owner
     const existingVehicle = await Vehicle.findOne({
       registrationNo: normalizedRegNo,
+      isDeleted: false,
     });
     if (existingVehicle) {
       return res.status(400).json({
@@ -46,14 +48,26 @@ exports.registerVehicle = async (req, res, next) => {
       vehicle,
     });
   } catch (error) {
+    if (error.code === 11000) {
+      return res.status(400).json({
+        message: "A vehicle with this registration number already exists.",
+      });
+    }
+    if (error.name === "ValidationError") {
+      const messages = Object.values(error.errors).map((val) => val.message);
+      return res.status(400).json({ message: messages.join(", ") });
+    }
     next(error);
   }
 };
 
-// Get vehicles belonging strictly to the logged-in user
+// Get active vehicles belonging strictly to the logged-in user
 exports.getMyVehicles = async (req, res, next) => {
   try {
-    const vehicles = await Vehicle.find({ customerId: req.user._id });
+    const vehicles = await Vehicle.find({
+      customerId: req.user._id,
+      isDeleted: false,
+    });
 
     res.status(200).json({
       success: true,
@@ -65,12 +79,15 @@ exports.getMyVehicles = async (req, res, next) => {
   }
 };
 
-// Delete a vehicle with object-level authorization (IDOR protection)[cite: 52, 55]
+// Soft-delete a vehicle with object-level authorization (IDOR protection) to preserve historical audit trails
 exports.deleteVehicle = async (req, res, next) => {
   try {
     const vehicleId = req.params.id;
 
-    const vehicle = await Vehicle.findById(vehicleId);
+    const vehicle = await Vehicle.findOne({
+      _id: vehicleId,
+      isDeleted: false,
+    });
     if (!vehicle) {
       return res.status(404).json({ message: "Vehicle not found." });
     }
@@ -85,7 +102,9 @@ exports.deleteVehicle = async (req, res, next) => {
         .json({ message: "Unauthorized: You do not own this vehicle." });
     }
 
-    await vehicle.deleteOne();
+    vehicle.isDeleted = true;
+    vehicle.deletedAt = new Date();
+    await vehicle.save();
 
     res.status(200).json({
       success: true,

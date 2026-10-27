@@ -155,6 +155,7 @@ exports.register = async (req, res, next) => {
 
     const existingVehicle = await Vehicle.findOne({
       registrationNo: normalizedRegNo,
+      isDeleted: false,
     }).session(session);
     if (existingVehicle) {
       // Roll back the newly created User if the vehicle is already registered

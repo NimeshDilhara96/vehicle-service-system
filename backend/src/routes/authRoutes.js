@@ -8,7 +8,7 @@ const router = express.Router();
 // Checklist rule: Rate-limit authentication endpoints to prevent brute force
 const authLimiter = rateLimit({
   windowMs: 15 * 60 * 1000, // 15 minutes
-  max: 10, // Limit each IP to 10 requests per window
+  max: process.env.NODE_ENV === "test" ? 100 : 10, // Limit each IP to 10 requests per window
   standardHeaders: true,
   legacyHeaders: false,
   message: {
