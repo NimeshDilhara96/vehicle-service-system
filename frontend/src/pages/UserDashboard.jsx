@@ -171,7 +171,7 @@ function UserDashboard() {
   return (
     <div className="flex min-h-screen flex-col bg-[#f8f9fa] lg:flex-row">
       {/* Desktop Left Sidebar */}
-      <aside className="hidden w-60 shrink-0 flex-col justify-between bg-[#13294b] text-white lg:flex">
+      <aside className="hidden w-60 shrink-0 flex-col justify-between bg-[#13294b] text-white lg:sticky lg:top-0 lg:flex lg:h-screen lg:overflow-y-auto">
         <div>
           <div className="px-6 pt-7 pb-6">
             <span className="text-base font-bold tracking-tight">
