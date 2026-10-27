@@ -7,6 +7,7 @@ export default defineConfig({
   plugins: [react(), tailwindcss()],
   optimizeDeps: {
     force: true,
+    include: ['leaflet', 'react-leaflet', 'smartmap-pro'],
   },
   server: {
     proxy: {
@@ -17,3 +18,4 @@ export default defineConfig({
     },
   },
 })
+
