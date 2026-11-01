@@ -25,7 +25,9 @@ const sendTokenResponse = (user, statusCode, res, vehicle = null) => {
       id: user._id,
       name: user.name,
       email: user.email,
+      contactNo: user.contactNo,
       role: user.role,
+      createdAt: user.createdAt,
     },
   };
 
@@ -269,7 +271,117 @@ exports.getMe = async (req, res) => {
       id: req.user._id,
       name: req.user.name,
       email: req.user.email,
+      contactNo: req.user.contactNo,
       role: req.user.role,
+      createdAt: req.user.createdAt,
     },
   });
+};
+
+// Update logged-in user's profile details (name, email, contactNo)
+exports.updateProfile = async (req, res, next) => {
+  try {
+    const { name, email, contactNo } = req.body;
+
+    if (!name || !name.trim()) {
+      return res.status(400).json({ message: "Full name is required." });
+    }
+
+    const normalizedEmail = email ? email.trim().toLowerCase() : "";
+    if (!normalizedEmail) {
+      return res.status(400).json({ message: "Email is required." });
+    }
+
+    const normalizedContactNo = contactNo ? contactNo.trim() : "";
+    if (!MOBILE_REGEX.test(normalizedContactNo)) {
+      return res.status(400).json({
+        message:
+          "Invalid mobile number format. Use 07XXXXXXXX or +947XXXXXXXX.",
+      });
+    }
+
+    // Check if another user already has this email
+    const existingEmail = await User.findOne({
+      email: normalizedEmail,
+      _id: { $ne: req.user._id },
+    });
+    if (existingEmail) {
+      return res.status(400).json({ message: "Email is already registered." });
+    }
+
+    // Check if another user already has this contact number
+    const existingContact = await User.findOne({
+      contactNo: normalizedContactNo,
+      _id: { $ne: req.user._id },
+    });
+    if (existingContact) {
+      return res
+        .status(400)
+        .json({ message: "Contact number is already registered." });
+    }
+
+    const updatedUser = await User.findByIdAndUpdate(
+      req.user._id,
+      {
+        name: name.trim(),
+        email: normalizedEmail,
+        contactNo: normalizedContactNo,
+      },
+      { new: true, runValidators: true },
+    );
+
+    res.status(200).json({
+      success: true,
+      message: "Profile updated successfully.",
+      user: {
+        id: updatedUser._id,
+        name: updatedUser.name,
+        email: updatedUser.email,
+        contactNo: updatedUser.contactNo,
+        role: updatedUser.role,
+        createdAt: updatedUser.createdAt,
+      },
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+// Update logged-in user's password with current password verification
+exports.updatePassword = async (req, res, next) => {
+  try {
+    const { currentPassword, newPassword } = req.body;
+
+    if (!currentPassword || !newPassword) {
+      return res.status(400).json({
+        message: "Please provide both current password and new password.",
+      });
+    }
+
+    if (newPassword.length < 6) {
+      return res.status(400).json({
+        message: "New password must be at least 6 characters long.",
+      });
+    }
+
+    const user = await User.findById(req.user._id).select("+password");
+    if (!user) {
+      return res.status(404).json({ message: "User not found." });
+    }
+
+    const isMatch = await user.comparePassword(currentPassword);
+    if (!isMatch) {
+      return res
+        .status(401)
+        .json({ message: "Current password is incorrect." });
+    }
+
+    user.password = newPassword;
+    user.passwordChangedAt = new Date();
+    await user.save();
+
+    sendTokenResponse(user, 200, res);
+  } catch (error) {
+    next(error);
+  }
 };

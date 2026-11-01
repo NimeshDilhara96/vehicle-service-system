@@ -26,6 +26,8 @@ router.post("/register", authLimiter, authController.register);
 router.post("/login", authLimiter, authController.login);
 router.post("/logout", authController.logout);
 router.get("/me", protect, authController.getMe);
+router.put("/profile", protect, authController.updateProfile);
+router.put("/password", protect, authLimiter, authController.updatePassword);
 
 // Role-based protected dashboard routes
 router.get("/user-dashboard", protect, restrictTo("Customer"), (req, res) => {
@@ -53,5 +55,36 @@ router.get("/admin-dashboard", protect, restrictTo("Admin"), (req, res) => {
     },
   });
 });
+
+router.get("/driver-dashboard", protect, restrictTo("Driver"), (req, res) => {
+  res.status(200).json({
+    success: true,
+    message: "Test Successfully - Driver",
+    user: {
+      id: req.user._id,
+      name: req.user.name,
+      email: req.user.email,
+      role: req.user.role,
+    },
+  });
+});
+
+router.get(
+  "/mechanic-dashboard",
+  protect,
+  restrictTo("Mechanic"),
+  (req, res) => {
+    res.status(200).json({
+      success: true,
+      message: "Test Successfully - Mechanic",
+      user: {
+        id: req.user._id,
+        name: req.user.name,
+        email: req.user.email,
+        role: req.user.role,
+      },
+    });
+  },
+);
 
 module.exports = router;

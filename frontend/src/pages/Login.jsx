@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { useNavigate, Link } from "react-router-dom";
 import { useAuth } from "../context/AuthContext";
+import { getDashboardPathByRole } from "../components/ProtectedRoute";
 import AuthLayout from "../components/ui/AuthLayout";
 import Input from "../components/ui/Input";
 import Button from "../components/ui/Button";
@@ -30,7 +31,7 @@ function Login() {
       const data = await login(email, password);
 
       if (data.success) {
-        navigate(data.user.role === "Admin" ? "/admin-dashboard" : "/user-dashboard");
+        navigate(getDashboardPathByRole(data.user.role));
       }
     } catch (err) {
       setError(err.response?.data?.message || "Login failed");
