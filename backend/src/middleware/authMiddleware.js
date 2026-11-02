@@ -44,16 +44,20 @@ exports.protect = async (req, res, next) => {
     // Assign verified user to request object
     req.user = currentUser;
     next();
-  } catch (error) {
+  } catch {
     return res.status(401).json({ message: "Invalid or expired session." });
   }
 };
 
-// Role-based authorization middleware
+// Role-based authorization middleware (case-insensitive match)
 exports.restrictTo = (...roles) => {
+  const normalizedAllowed = roles.map((r) => String(r).trim().toLowerCase());
   return (req, res, next) => {
     // Checklist rule: Derive role strictly from server-side authenticated state
-    if (!roles.includes(req.user.role)) {
+    const userRole = String(req.user?.role || "")
+      .trim()
+      .toLowerCase();
+    if (!normalizedAllowed.includes(userRole)) {
       return res.status(403).json({
         message: "You do not have permission to perform this action.",
       });
