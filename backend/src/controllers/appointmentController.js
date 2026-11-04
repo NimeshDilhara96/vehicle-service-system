@@ -262,6 +262,22 @@ exports.createAppointment = async (req, res, next) => {
       });
     }
 
+    // A2. Prevent duplicate active bookings for the same vehicle
+    const existingActiveBooking = await Appointment.findOne({
+      vehicleId: vehicle._id,
+      status: { $in: ["Pending", "Confirmed", "In Progress"] },
+    })
+      .select("serviceDate serviceTime status")
+      .session(session)
+      .lean();
+
+    if (existingActiveBooking) {
+      await session.abortTransaction();
+      return res.status(409).json({
+        message: `Vehicle ${vehicle.registrationNo} already has an active booking (${existingActiveBooking.status}). You can book again once the current service is completed or cancelled.`,
+      });
+    }
+
     // B. Verify Service Package
     const servicePackage = await ServicePackage.findOne({
       _id: packageId,
@@ -534,6 +550,8 @@ exports.getMyBookings = async (req, res, next) => {
 // 5. Admin: Get All Appointments with O(N) Batch Joins, Available Drivers & Summary Metrics
 exports.getAllAppointmentsAdmin = async (req, res, next) => {
   try {
+    await ensureDefaultBays();
+
     const appointments = await Appointment.find({})
       .populate("customerId", "name email contactNo")
       .populate("packageId", "packageName price")
@@ -543,17 +561,27 @@ exports.getAllAppointmentsAdmin = async (req, res, next) => {
     const appointmentIds = appointments.map((a) => a._id);
 
     // Parallel batch fetch (avoids N+1 queries)
-    const [invoices, services, pickups, availableDrivers] = await Promise.all([
-      Invoice.find({ appointmentId: { $in: appointmentIds } }).lean(),
-      Service.find({ appointmentId: { $in: appointmentIds } }).lean(),
-      PickupDelivery.find({ appointmentId: { $in: appointmentIds } })
-        .populate("driverId", "name contactNo licenseNo photograph isAvailable")
-        .lean(),
-      Driver.find({ isDeleted: false, isAvailable: true })
-        .select("name contactNo licenseNo photograph isAvailable")
-        .sort({ name: 1 })
-        .lean(),
-    ]);
+    const [invoices, services, pickups, availableDrivers, availableBays] =
+      await Promise.all([
+        Invoice.find({ appointmentId: { $in: appointmentIds } }).lean(),
+        Service.find({ appointmentId: { $in: appointmentIds } })
+          .populate("bayId", "bayName bayType isAvailable")
+          .lean(),
+        PickupDelivery.find({ appointmentId: { $in: appointmentIds } })
+          .populate(
+            "driverId",
+            "name contactNo licenseNo photograph isAvailable",
+          )
+          .lean(),
+        Driver.find({ isDeleted: false, isAvailable: true })
+          .select("name contactNo licenseNo photograph isAvailable")
+          .sort({ name: 1 })
+          .lean(),
+        ServiceBay.find({ isAvailable: true })
+          .select("bayName bayType isAvailable")
+          .sort({ bayName: 1 })
+          .lean(),
+      ]);
 
     const invoiceMap = {};
     for (const inv of invoices) {
@@ -604,6 +632,7 @@ exports.getAllAppointmentsAdmin = async (req, res, next) => {
       count: enrichedAppointments.length,
       stats,
       availableDrivers,
+      availableBays,
       serverTime: new Date().toISOString(),
       appointments: enrichedAppointments,
     });
@@ -612,11 +641,11 @@ exports.getAllAppointmentsAdmin = async (req, res, next) => {
   }
 };
 
-// 6. Admin: Update Appointment Status & Automatically Create Workshop Service when Vehicle Arrives ("In Progress")
+// 6. Admin: Update Appointment Status & Assign Selected Service Bay when Vehicle is Received ("In Progress")
 exports.updateAppointmentStatusAdmin = async (req, res, next) => {
   try {
     const { id } = req.params;
-    const { status } = req.body;
+    const { status, bayId } = req.body || {};
 
     if (!mongoose.Types.ObjectId.isValid(id)) {
       return res.status(400).json({ message: "Invalid appointment ID." });
@@ -628,6 +657,59 @@ exports.updateAppointmentStatusAdmin = async (req, res, next) => {
       });
     }
 
+    if (
+      bayId !== undefined &&
+      bayId !== null &&
+      bayId !== "" &&
+      (typeof bayId !== "string" || !mongoose.Types.ObjectId.isValid(bayId))
+    ) {
+      return res.status(400).json({ message: "Invalid service bay ID." });
+    }
+
+    const existingApp = await Appointment.findById(id).lean();
+    if (!existingApp) {
+      return res.status(404).json({ message: "Appointment not found." });
+    }
+
+    // If marking Vehicle Received ("In Progress"), verify pickup status (if pickup booking) and claim the selected ServiceBay first
+    let claimedBay = null;
+    if (status === "In Progress") {
+      if (existingApp.requiresPickup) {
+        const pickupCheck = await PickupDelivery.findOne({
+          appointmentId: existingApp._id,
+        }).lean();
+        if (
+          pickupCheck &&
+          pickupCheck.pickupStatus !== "Delivered to Workshop"
+        ) {
+          return res.status(400).json({
+            message:
+              "Cannot mark vehicle as received until the driver marks it 'Delivered to Workshop'.",
+          });
+        }
+      }
+
+      if (!bayId) {
+        return res.status(400).json({
+          message:
+            "Please select an available Service Bay before marking the vehicle as received.",
+        });
+      }
+
+      claimedBay = await ServiceBay.findOneAndUpdate(
+        { _id: bayId, isAvailable: true },
+        { $set: { isAvailable: false } },
+        { returnDocument: "after" },
+      );
+
+      if (!claimedBay) {
+        return res.status(409).json({
+          message:
+            "Selected service bay is currently occupied. Please choose another available bay.",
+        });
+      }
+    }
+
     const updated = await Appointment.findByIdAndUpdate(
       id,
       { status },
@@ -637,50 +719,53 @@ exports.updateAppointmentStatusAdmin = async (req, res, next) => {
       .populate("packageId", "packageName price")
       .lean();
 
-    if (!updated) {
-      return res.status(404).json({ message: "Appointment not found." });
-    }
+    let serviceDoc = await Service.findOne({ appointmentId: updated._id })
+      .populate("bayId", "bayName bayType isAvailable")
+      .lean();
 
-    // Sync Workshop Service record if present (or auto-assign available Mechanic & ServiceBay when transitioning to "In Progress")
-    let serviceDoc = await Service.findOne({ appointmentId: updated._id }).lean();
+    if (status === "In Progress" && !serviceDoc && claimedBay) {
+      const availableMechanic = await User.findOne({
+        role: "Mechanic",
+        isActive: true,
+      })
+        .select("_id")
+        .lean();
 
-    if (status === "In Progress" && !serviceDoc) {
-      const [availableBay, availableMechanic] = await Promise.all([
-        ServiceBay.findOneAndUpdate(
-          { isAvailable: true },
-          { $set: { isAvailable: false } },
-          { returnDocument: "after" },
-        ),
-        User.findOne({ role: "Mechanic", isActive: true }).select("_id").lean(),
-      ]);
+      const mechanicIdToUse = availableMechanic?._id || req.user._id;
 
-      if (availableBay && availableMechanic) {
-        const createdSrv = await Service.create({
-          customerId: updated.customerId?._id || updated.customerId,
-          vehicleId: updated.vehicleId,
-          vehicleSnapshot: updated.vehicleSnapshot,
-          appointmentId: updated._id,
-          mechanicId: availableMechanic._id,
-          bayId: availableBay._id,
-          status: "Vehicle Received",
-        });
-        availableBay.currentServiceId = createdSrv._id;
-        await availableBay.save();
-        await Invoice.findOneAndUpdate(
-          { appointmentId: updated._id },
-          { $set: { serviceId: createdSrv._id } },
-          { returnDocument: "after" },
-        );
-        serviceDoc = createdSrv.toObject();
-      }
+      const createdSrv = await Service.create({
+        customerId: updated.customerId?._id || updated.customerId,
+        vehicleId: updated.vehicleId,
+        vehicleSnapshot: updated.vehicleSnapshot,
+        appointmentId: updated._id,
+        mechanicId: mechanicIdToUse,
+        bayId: claimedBay._id,
+        status: "Inspection",
+      });
+
+      claimedBay.currentServiceId = createdSrv._id;
+      await claimedBay.save();
+
+      await Invoice.findOneAndUpdate(
+        { appointmentId: updated._id },
+        { $set: { serviceId: createdSrv._id } },
+        { returnDocument: "after" },
+      );
+
+      serviceDoc = await Service.findById(createdSrv._id)
+        .populate("bayId", "bayName bayType isAvailable")
+        .lean();
     } else if (status === "Completed" && serviceDoc) {
       serviceDoc = await Service.findByIdAndUpdate(
         serviceDoc._id,
         { status: "Completed" },
         { returnDocument: "after" },
-      ).lean();
+      )
+        .populate("bayId", "bayName bayType isAvailable")
+        .lean();
       if (serviceDoc?.bayId) {
-        await ServiceBay.findByIdAndUpdate(serviceDoc.bayId, {
+        const bayObjId = serviceDoc.bayId._id || serviceDoc.bayId;
+        await ServiceBay.findByIdAndUpdate(bayObjId, {
           $set: { isAvailable: true, currentServiceId: null },
         });
       }

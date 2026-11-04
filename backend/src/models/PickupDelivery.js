@@ -61,6 +61,10 @@ const pickupDeliverySchema = new mongoose.Schema(
       address: { type: String, required: true, trim: true },
       coordinates: { type: [Number], required: true }, // [lat, lng]
     },
+    driverLiveLocation: {
+      coordinates: { type: [Number], default: null }, // [lat, lng]
+      updatedAt: { type: Date, default: null },
+    },
     distance: {
       type: Number,
       default: 0,

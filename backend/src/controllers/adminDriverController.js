@@ -744,9 +744,59 @@ exports.updatePickupTaskStatus = async (req, res, next) => {
       timestamp: new Date(),
     };
 
+    const existingTask = await PickupDelivery.findById(taskId).lean();
+    if (!existingTask) {
+      return res.status(404).json({ message: "Pickup task not found." });
+    }
+
+    // Object-level authorization: If caller is a Driver, verify this task is assigned to them
+    if (req.user?.role === "Driver") {
+      await ensureSeededDriversSynced();
+      const driverProfile = await Driver.findOne({
+        $or: [{ userId: req.user._id }, { contactNo: req.user.contactNo }],
+        isDeleted: false,
+      })
+        .select("_id")
+        .lean();
+
+      const allowedDriverIds = [req.user._id.toString()];
+      if (driverProfile?._id) {
+        allowedDriverIds.push(driverProfile._id.toString());
+      }
+
+      if (
+        !existingTask.driverId ||
+        !allowedDriverIds.includes(existingTask.driverId.toString())
+      ) {
+        return res.status(403).json({
+          message: "You are not authorized to update this pickup task.",
+        });
+      }
+    }
+
     const updateSet = { pickupStatus };
     if (pickupStatus === "Delivered to Customer") {
       updateSet.completedAt = new Date();
+      if (existingTask.pickupLocation?.coordinates?.length === 2) {
+        updateSet.driverLiveLocation = {
+          coordinates: existingTask.pickupLocation.coordinates,
+          updatedAt: new Date(),
+        };
+      }
+    } else if (pickupStatus === "Delivered to Workshop") {
+      if (existingTask.deliveryLocation?.coordinates?.length === 2) {
+        updateSet.driverLiveLocation = {
+          coordinates: existingTask.deliveryLocation.coordinates,
+          updatedAt: new Date(),
+        };
+      }
+    } else if (pickupStatus === "Vehicle Picked Up") {
+      if (existingTask.pickupLocation?.coordinates?.length === 2) {
+        updateSet.driverLiveLocation = {
+          coordinates: existingTask.pickupLocation.coordinates,
+          updatedAt: new Date(),
+        };
+      }
     }
 
     const populated = await PickupDelivery.findByIdAndUpdate(
@@ -774,7 +824,7 @@ exports.updatePickupTaskStatus = async (req, res, next) => {
       return res.status(404).json({ message: "Pickup task not found." });
     }
 
-    // When vehicle is Delivered to Workshop, keep Appointment in "Confirmed" (or "In Progress" if Service already started via startService)
+    // When vehicle is Delivered to Customer, mark Appointment as Completed
     const appId = populated.appointmentId?._id || populated.appointmentId;
     if (pickupStatus === "Delivered to Customer" && appId) {
       await Appointment.findByIdAndUpdate(appId, { status: "Completed" });
@@ -784,9 +834,52 @@ exports.updatePickupTaskStatus = async (req, res, next) => {
       success: true,
       message:
         pickupStatus === "Delivered to Workshop"
-          ? "Vehicle delivered to workshop! Booking moved to In Progress & Service job started."
+          ? "Vehicle delivered to workshop!"
           : `Task status updated to ${pickupStatus}.`,
       task: populated,
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+// 9. Get logged-in Driver's assigned pickup & delivery tasks
+exports.getMyAssignedTasks = async (req, res, next) => {
+  try {
+    await ensureSeededDriversSynced();
+
+    const driverProfile = await Driver.findOne({
+      $or: [{ userId: req.user._id }, { contactNo: req.user.contactNo }],
+      isDeleted: false,
+    }).lean();
+
+    if (!driverProfile) {
+      return res.status(200).json({
+        success: true,
+        driver: null,
+        tasks: [],
+      });
+    }
+
+    const lookupIds = [driverProfile._id];
+    if (driverProfile.userId) lookupIds.push(driverProfile.userId);
+
+    const tasks = await PickupDelivery.find({
+      driverId: { $in: lookupIds },
+      pickupStatus: { $ne: "Cancelled" },
+    })
+      .populate(
+        "appointmentId",
+        "vehicleSnapshot serviceDate serviceTime status",
+      )
+      .populate("customerId", "name contactNo email")
+      .sort({ updatedAt: -1 })
+      .lean();
+
+    res.status(200).json({
+      success: true,
+      driver: driverProfile,
+      tasks,
     });
   } catch (error) {
     next(error);

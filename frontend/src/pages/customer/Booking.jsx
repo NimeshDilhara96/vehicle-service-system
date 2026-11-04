@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useMemo } from "react";
 import { SmartMap } from "smartmap-pro";
 import api from "../../services/api";
 import Input from "../../components/ui/Input";
@@ -108,11 +108,29 @@ function Booking({ initialTab = "new", onNavigateToVehicles, onBookingsChange })
     ])
       .then(([vehRes, pkgRes, bookRes]) => {
         if (!isMounted) return;
+        const appList = bookRes.data?.success ? bookRes.data.appointments || [] : [];
+        if (bookRes.data.success) {
+          setBookings(appList);
+          if (onBookingsChange) {
+            onBookingsChange(appList);
+          }
+        }
         if (vehRes.data.success) {
           const vehList = vehRes.data.vehicles || [];
           setVehicles(vehList);
           if (vehList.length > 0) {
-            setSelectedVehicleId(vehList[0]._id);
+            const activeVehIds = new Set(
+              appList
+                .filter(
+                  (b) => b.status && b.status !== "Completed" && b.status !== "Cancelled",
+                )
+                .map((b) =>
+                  String(typeof b.vehicleId === "object" ? b.vehicleId?._id : b.vehicleId),
+                ),
+            );
+            const firstFreeVeh =
+              vehList.find((v) => !activeVehIds.has(String(v._id))) || vehList[0];
+            setSelectedVehicleId(firstFreeVeh._id);
           }
         }
         if (pkgRes.data.success) {
@@ -124,13 +142,6 @@ function Booking({ initialTab = "new", onNavigateToVehicles, onBookingsChange })
           if (pkgRes.data.workshops) {
             setWorkshops(pkgRes.data.workshops);
             setSelectedWorkshop(pkgRes.data.workshops[0] || null);
-          }
-        }
-        if (bookRes.data.success) {
-          const appList = bookRes.data.appointments || [];
-          setBookings(appList);
-          if (onBookingsChange) {
-            onBookingsChange(appList);
           }
         }
       })
@@ -193,6 +204,38 @@ function Booking({ initialTab = "new", onNavigateToVehicles, onBookingsChange })
 
   const selectedVehicle = vehicles.find((v) => v._id === selectedVehicleId);
   const selectedPackage = packages.find((p) => p._id === selectedPackageId);
+
+  // Map of active (non-completed/non-cancelled) bookings by vehicleId / registrationNo
+  const activeBookingByVehicle = useMemo(() => {
+    const map = {};
+    for (const b of bookings) {
+      if (b.status && b.status !== "Completed" && b.status !== "Cancelled") {
+        const vId =
+          typeof b.vehicleId === "object" ? b.vehicleId?._id : b.vehicleId;
+        if (vId) map[String(vId)] = b;
+        if (b.vehicleSnapshot?.registrationNo) {
+          map[`reg:${b.vehicleSnapshot.registrationNo}`] = b;
+        }
+      }
+    }
+    return map;
+  }, [bookings]);
+
+  const getActiveBookingForVehicle = useCallback(
+    (v) => {
+      if (!v) return null;
+      return (
+        activeBookingByVehicle[String(v._id)] ||
+        (v.registrationNo
+          ? activeBookingByVehicle[`reg:${v.registrationNo}`]
+          : null) ||
+        null
+      );
+    },
+    [activeBookingByVehicle],
+  );
+
+  const selectedVehicleActiveBooking = getActiveBookingForVehicle(selectedVehicle);
 
   // Reverse-geocode coordinates to a human-readable street/area address
   const reverseGeocodeAddress = useCallback(async (lat, lng) => {
@@ -323,6 +366,12 @@ function Booking({ initialTab = "new", onNavigateToVehicles, onBookingsChange })
 
     if (!selectedVehicleId) {
       setError("Please select a vehicle.");
+      return;
+    }
+    if (selectedVehicleActiveBooking) {
+      setError(
+        `Vehicle ${selectedVehicle?.registrationNo || ""} already has an active booking (${selectedVehicleActiveBooking.status}). You can book again once the current service is completed or cancelled.`,
+      );
       return;
     }
     if (!selectedPackageId) {
@@ -631,14 +680,33 @@ function Booking({ initialTab = "new", onNavigateToVehicles, onBookingsChange })
                     required
                     className="w-full rounded-lg border border-gray-300 bg-white px-3 py-2.5 text-sm text-gray-900 outline-none transition focus:border-orange-700 focus:ring-1 focus:ring-orange-700"
                   >
-                    {vehicles.map((v) => (
-                      <option key={v._id} value={v._id}>
-                        {v.registrationNo} — {[v.brand, v.modelName].filter(Boolean).join(" ")} ({v.vehicleType})
-                      </option>
-                    ))}
+                    {vehicles.map((v) => {
+                      const activeBook = getActiveBookingForVehicle(v);
+                      return (
+                        <option key={v._id} value={v._id}>
+                          {v.registrationNo} — {[v.brand, v.modelName].filter(Boolean).join(" ")} ({v.vehicleType})
+                          {activeBook ? ` [Active Booking: ${activeBook.status}]` : ""}
+                        </option>
+                      );
+                    })}
                   </select>
                 </div>
               </div>
+
+              {selectedVehicleActiveBooking && (
+                <div className="mt-3 flex flex-wrap items-center justify-between gap-2 rounded-xl border border-amber-200 bg-amber-50 px-3.5 py-2.5 text-xs text-amber-900">
+                  <span>
+                    <strong>{selectedVehicle?.registrationNo}</strong> already has an active booking (Status: <strong>{selectedVehicleActiveBooking.status}</strong>). You cannot place another booking for the same vehicle until the current service is completed or cancelled.
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => setActiveSubTab("list")}
+                    className="rounded-lg bg-amber-800 px-3 py-1 text-[11px] font-semibold text-white transition hover:bg-amber-900"
+                  >
+                    View Active Booking →
+                  </button>
+                </div>
+              )}
             </section>
 
             {/* 3. Service Packages Selection */}
@@ -851,7 +919,10 @@ function Booking({ initialTab = "new", onNavigateToVehicles, onBookingsChange })
                 <Button
                   type="submit"
                   loading={submitting}
-                  disabled={requiresPickup && (!!pickupError || calculatingFare)}
+                  disabled={
+                    Boolean(selectedVehicleActiveBooking) ||
+                    (requiresPickup && (!!pickupError || calculatingFare))
+                  }
                   className={`w-full sm:w-auto! px-8! ${buttonClass}`}
                 >
                   Confirm &amp; Book Service

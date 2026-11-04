@@ -18,27 +18,31 @@ const navItems = [
 ];
 
 const STEP_LABELS = [
-  "Vehicle Received",
   "Inspection",
-  "Service",
-  "Additional Work Approval",
-  "Service Completed",
-  "Ready for Delivery",
+  "Waiting for Approval",
+  "In Progress",
+  "Waiting for Parts",
+  "Completed",
 ];
 
 function buildProgressFromBooking(booking) {
   if (!booking || booking.status === "Cancelled") {
     return {
       currentStepIndex: -1,
-      badgeText: booking?.status === "Cancelled" ? "Cancelled" : "No Active Booking",
+      badgeText:
+        booking?.status === "Cancelled" ? "Cancelled" : "No Active Booking",
       steps: STEP_LABELS.map((label) => ({ label, status: "upcoming" })),
     };
   }
 
-  // If a detailed Workshop Service record exists, use its exact 6-step stage
+  // If a detailed Workshop Service record exists, map its stage
   let activeIndex = -1;
   if (booking.service?.status) {
-    activeIndex = STEP_LABELS.indexOf(booking.service.status);
+    if (booking.service.status === "Vehicle Received") {
+      activeIndex = 0; // Legacy maps to Inspection
+    } else {
+      activeIndex = STEP_LABELS.indexOf(booking.service.status);
+    }
   }
 
   // Otherwise derive step progress from Appointment status
@@ -46,13 +50,13 @@ function buildProgressFromBooking(booking) {
     switch (booking.status) {
       case "Pending":
       case "Confirmed":
-        activeIndex = 0; // Step 1: Vehicle Received / Booking Scheduled
+        activeIndex = 0; // Inspection scheduled
         break;
       case "In Progress":
-        activeIndex = 2; // Step 3: Service
+        activeIndex = 2; // In Progress
         break;
       case "Completed":
-        activeIndex = 5; // Step 6: Ready for Delivery / Completed
+        activeIndex = 4; // Completed
         break;
       default:
         activeIndex = 0;

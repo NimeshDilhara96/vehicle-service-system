@@ -20,6 +20,46 @@ const PICKUP_BADGE = {
   "Delivered to Customer": "bg-emerald-100 text-emerald-900 border-emerald-300",
 };
 
+const PICKUP_FLOW_STEPS = [
+  "Booked",
+  "Driver Assigned",
+  "En Route",
+  "Picked Up",
+  "At Workshop",
+  "In Service",
+  "Completed",
+];
+
+const DROPOFF_FLOW_STEPS = ["Booked", "In Service", "Completed"];
+
+const PICKUP_STATUS_TO_STEP = {
+  "Pending Assignment": 0,
+  "Driver Assigned": 1,
+  "En Route to Pickup": 2,
+  "Vehicle Picked Up": 3,
+  "Delivered to Workshop": 4,
+  "Out for Return Delivery": 5,
+  "Delivered to Customer": 6,
+};
+
+// Builds the status progress timeline shown below each booking box
+function getBookingProgress(app) {
+  const isPickup = Boolean(app.requiresPickup);
+  const steps = isPickup ? PICKUP_FLOW_STEPS : DROPOFF_FLOW_STEPS;
+  const lastIdx = steps.length - 1;
+
+  let current = 0;
+  if (isPickup) {
+    current = PICKUP_STATUS_TO_STEP[app.pickupDelivery?.pickupStatus] ?? 0;
+    if (app.status === "In Progress") current = Math.max(current, 5);
+  } else if (app.status === "In Progress") {
+    current = 1;
+  }
+  if (app.status === "Completed") current = lastIdx;
+
+  return { steps, current, isCancelled: app.status === "Cancelled" };
+}
+
 function formatIsoDate(dateVal) {
   if (!dateVal) return "";
   try {
@@ -46,6 +86,7 @@ function ViewBooking({ onOpenDispatch, onOpenBayControl }) {
   const [activeSubTab, setActiveSubTab] = useState("today"); // 'today' | 'upcoming' | 'history'
   const [appointments, setAppointments] = useState([]);
   const [availableDrivers, setAvailableDrivers] = useState([]);
+  const [availableBays, setAvailableBays] = useState([]);
   const [loading, setLoading] = useState(true);
   const [refreshCount, setRefreshCount] = useState(0);
   const [search, setSearch] = useState("");
@@ -56,6 +97,12 @@ function ViewBooking({ onOpenDispatch, onOpenBayControl }) {
   const [assigningAppId, setAssigningAppId] = useState(null);
   const [selectedDriverId, setSelectedDriverId] = useState("");
   const [isAssigning, setIsAssigning] = useState(false);
+
+  // Receive Vehicle & Select Bay State (once Delivered to Workshop or Drop-off arrives)
+  const [receivingAppId, setReceivingAppId] = useState(null);
+  const [selectedBayId, setSelectedBayId] = useState("");
+  const [isReceiving, setIsReceiving] = useState(false);
+
   const [cancellingId, setCancellingId] = useState(null);
 
   const todayStr = useMemo(() => new Date().toISOString().split("T")[0], []);
@@ -70,6 +117,7 @@ function ViewBooking({ onOpenDispatch, onOpenBayControl }) {
         if (isMounted && res.data.success) {
           setAppointments(res.data.appointments || []);
           setAvailableDrivers(res.data.availableDrivers || []);
+          setAvailableBays(res.data.availableBays || []);
           setError("");
         }
       })
@@ -121,6 +169,44 @@ function ViewBooking({ onOpenDispatch, onOpenBayControl }) {
       setError(err.response?.data?.message || "Failed to assign driver.");
     } finally {
       setIsAssigning(false);
+    }
+  };
+
+  // Mark Vehicle Received & Assign Selected Service Bay (after Delivered to Workshop or Drop-off)
+  const handleReceiveAndAssignBay = async (appointmentId) => {
+    if (!selectedBayId) {
+      setError("Please select an available Service Bay.");
+      return;
+    }
+
+    setError("");
+    setSuccessMsg("");
+    setIsReceiving(true);
+
+    try {
+      const res = await api.patch(
+        `/appointments/admin/${appointmentId}/status`,
+        {
+          status: "In Progress",
+          bayId: selectedBayId,
+        },
+      );
+
+      if (res.data.success) {
+        setSuccessMsg(
+          "Vehicle marked as Received and assigned to the selected Service Bay!",
+        );
+        setReceivingAppId(null);
+        setSelectedBayId("");
+        setRefreshCount((prev) => prev + 1);
+      }
+    } catch (err) {
+      setError(
+        err.response?.data?.message ||
+          "Failed to mark vehicle as received in service bay.",
+      );
+    } finally {
+      setIsReceiving(false);
     }
   };
 
@@ -383,12 +469,14 @@ function ViewBooking({ onOpenDispatch, onOpenBayControl }) {
             const pickup = app.pickupDelivery || null;
             const assignedDriver = pickup?.driverId || null;
             const isToday = formatIsoDate(app.serviceDate) === todayStr;
+            const progress = getBookingProgress(app);
 
             return (
               <div
                 key={app._id}
-                className="flex flex-col justify-between gap-3 rounded-2xl border border-gray-200 bg-white p-4 shadow-2xs transition hover:border-gray-300 sm:flex-row sm:items-center"
+                className="overflow-hidden rounded-2xl border border-gray-200 bg-white shadow-2xs transition hover:border-gray-300"
               >
+              <div className="flex flex-col justify-between gap-3 p-4 sm:flex-row sm:items-center">
                 {/* Left: Vehicle Plate, Customer, Schedule & Package */}
                 <div className="flex flex-1 flex-col gap-3 sm:flex-row sm:items-start">
                   {/* Yellow Plate Badge */}
@@ -484,9 +572,10 @@ function ViewBooking({ onOpenDispatch, onOpenBayControl }) {
 
                     {/* Workshop Service Indicator */}
                     {app.status === "In Progress" && (
-                      <div className="mt-1.5 flex items-center gap-2">
-                        <span className="rounded-full bg-blue-100 px-2 py-0.5 text-[10px] font-bold text-blue-900">
-                          In Service Bay
+                      <div className="mt-1.5 flex flex-wrap items-center gap-2">
+                        <span className="rounded-full bg-blue-100 px-2.5 py-0.5 text-[10px] font-bold text-blue-900">
+                          {app.service?.status || "Inspection"} ·{" "}
+                          {app.service?.bayId?.bayName || "In Service Bay"}
                         </span>
                         {onOpenBayControl && (
                           <button
@@ -513,8 +602,8 @@ function ViewBooking({ onOpenDispatch, onOpenBayControl }) {
                     </p>
                   </div>
 
-                  {/* Actions for Today's Pickup Bookings */}
-                  <div className="flex flex-wrap items-center gap-2">
+                  {/* Actions for Today's Pickup & Workshop Receiving */}
+                  <div className="flex flex-wrap items-center justify-end gap-2">
                     {app.requiresPickup &&
                       !assignedDriver &&
                       app.status !== "Cancelled" &&
@@ -565,6 +654,56 @@ function ViewBooking({ onOpenDispatch, onOpenBayControl }) {
                         </>
                       )}
 
+                    {/* Once Delivered to Workshop (or Drop-off arrives), Admin marks Vehicle Received & selects Service Bay */}
+                    {app.status === "Confirmed" &&
+                      (!app.requiresPickup ||
+                        pickup?.pickupStatus === "Delivered to Workshop") && (
+                        <>
+                          {receivingAppId === app._id ? (
+                            <div className="flex flex-wrap items-center gap-1.5">
+                              <select
+                                value={selectedBayId}
+                                onChange={(e) => setSelectedBayId(e.target.value)}
+                                className="rounded-lg border border-orange-300 bg-white px-2.5 py-1.5 text-xs text-gray-900 outline-none focus:border-orange-700"
+                              >
+                                <option value="">Select Service Bay...</option>
+                                {availableBays.map((b) => (
+                                  <option key={b._id} value={b._id}>
+                                    {b.bayName} ({b.bayType})
+                                  </option>
+                                ))}
+                              </select>
+                              <button
+                                type="button"
+                                disabled={isReceiving}
+                                onClick={() => handleReceiveAndAssignBay(app._id)}
+                                className="rounded-lg bg-emerald-700 px-3 py-1.5 text-xs font-semibold text-white transition hover:bg-emerald-800 disabled:opacity-50"
+                              >
+                                {isReceiving ? "Saving..." : "Confirm Received"}
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => setReceivingAppId(null)}
+                                className="px-1 text-xs text-slate-400 hover:text-slate-600"
+                              >
+                                ✕
+                              </button>
+                            </div>
+                          ) : (
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setReceivingAppId(app._id);
+                                setSelectedBayId(availableBays[0]?._id || "");
+                              }}
+                              className="rounded-lg bg-orange-700 px-3 py-1.5 text-xs font-semibold text-white transition hover:bg-orange-800"
+                            >
+                              Mark Vehicle Received &amp; Select Bay
+                            </button>
+                          )}
+                        </>
+                      )}
+
                     {app.requiresPickup && onOpenDispatch && (
                       <button
                         type="button"
@@ -588,6 +727,62 @@ function ViewBooking({ onOpenDispatch, onOpenBayControl }) {
                   </div>
                 </div>
               </div>
+
+              {/* Status progress shown below the box */}
+              <div className="border-t border-gray-100 bg-slate-50/70 px-4 py-3">
+                {progress.isCancelled ? (
+                  <p className="text-xs font-semibold text-red-600">
+                    ✕ This booking was cancelled
+                  </p>
+                ) : (
+                  <div className="flex items-start overflow-x-auto">
+                    {progress.steps.map((label, idx) => {
+                      const isDone = idx < progress.current;
+                      const isCurrent = idx === progress.current;
+                      const isLast = idx === progress.steps.length - 1;
+                      return (
+                        <div
+                          key={label}
+                          className={`flex items-start ${isLast ? "" : "flex-1"}`}
+                        >
+                          <div className="flex w-16 shrink-0 flex-col items-center text-center">
+                            <span
+                              className={`flex h-5 w-5 items-center justify-center rounded-full text-[10px] font-bold ${
+                                isDone
+                                  ? "bg-emerald-600 text-white"
+                                  : isCurrent
+                                    ? "bg-orange-700 text-white ring-4 ring-orange-100"
+                                    : "bg-slate-200 text-slate-400"
+                              }`}
+                            >
+                              {isDone ? "✓" : idx + 1}
+                            </span>
+                            <span
+                              className={`mt-1 text-[10px] leading-tight ${
+                                isCurrent
+                                  ? "font-bold text-orange-700"
+                                  : isDone
+                                    ? "font-medium text-emerald-700"
+                                    : "text-slate-400"
+                              }`}
+                            >
+                              {label}
+                            </span>
+                          </div>
+                          {!isLast && (
+                            <span
+                              className={`mt-2.5 h-0.5 min-w-4 flex-1 ${
+                                isDone ? "bg-emerald-500" : "bg-slate-200"
+                              }`}
+                            />
+                          )}
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
+            </div>
             );
           })}
         </div>
