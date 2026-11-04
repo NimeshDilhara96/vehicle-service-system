@@ -14,6 +14,35 @@ const TIME_SLOTS = [
   "04:30 PM",
 ];
 
+function getLocalTodayStr(now = new Date()) {
+  const year = now.getFullYear();
+  const month = String(now.getMonth() + 1).padStart(2, "0");
+  const day = String(now.getDate()).padStart(2, "0");
+  return `${year}-${month}-${day}`;
+}
+
+function parseSlotToMinutes(slotStr) {
+  if (typeof slotStr !== "string") return -1;
+  const match = slotStr.trim().match(/^(\d{1,2}):(\d{2})\s*(AM|PM)$/i);
+  if (!match) return -1;
+  let hours = parseInt(match[1], 10);
+  const minutes = parseInt(match[2], 10);
+  const period = match[3].toUpperCase();
+  if (period === "PM" && hours !== 12) hours += 12;
+  if (period === "AM" && hours === 12) hours = 0;
+  return hours * 60 + minutes;
+}
+
+function isSlotPastForDate(dateStr, slotStr, now = new Date()) {
+  if (!dateStr || !slotStr) return false;
+  const today = getLocalTodayStr(now);
+  if (dateStr < today) return true;
+  if (dateStr > today) return false;
+  const currentMinutes = now.getHours() * 60 + now.getMinutes();
+  const slotMinutes = parseSlotToMinutes(slotStr);
+  return slotMinutes <= currentMinutes;
+}
+
 const inputClass =
   "py-2.5! rounded-lg! border-gray-300! focus:border-orange-700! focus:ring-orange-700!";
 const buttonClass =
@@ -32,14 +61,37 @@ function Booking({ initialTab = "new", onNavigateToVehicles, onBookingsChange })
   const [error, setError] = useState("");
   const [successMsg, setSuccessMsg] = useState("");
 
+  // Today's local date in YYYY-MM-DD for min date & initial slot check
+  const todayStr = getLocalTodayStr();
+
   // Booking Form State
   const [selectedVehicleId, setSelectedVehicleId] = useState("");
   const [selectedPackageId, setSelectedPackageId] = useState("");
-  const [serviceDate, setServiceDate] = useState("");
-  const [serviceTime, setServiceTime] = useState(TIME_SLOTS[0]);
+  const [serviceDate, setServiceDate] = useState(todayStr);
+  const [serviceTime, setServiceTime] = useState(() => {
+    const firstFuture = TIME_SLOTS.find((t) => !isSlotPastForDate(todayStr, t));
+    return firstFuture || "";
+  });
+  const [slotList, setSlotList] = useState(() =>
+    TIME_SLOTS.map((time) => {
+      const isPast = isSlotPastForDate(todayStr, time);
+      return {
+        time,
+        remaining: 3,
+        maxCapacity: 3,
+        isPast,
+        isAvailable: !isPast,
+      };
+    }),
+  );
+  const [loadingSlots, setLoadingSlots] = useState(false);
+  const [slotRefreshCount, setSlotRefreshCount] = useState(0);
   const [requiresPickup, setRequiresPickup] = useState(false);
   const [pickupAddress, setPickupAddress] = useState("");
   const [pickupCoords, setPickupCoords] = useState(null);
+  const [userCoords, setUserCoords] = useState(null);
+  const [externalStartPoint, setExternalStartPoint] = useState(null);
+  const [locatingUser, setLocatingUser] = useState(false);
   const [pickupCharge, setPickupCharge] = useState(0);
   const [pickupDistanceKm, setPickupDistanceKm] = useState(0);
   const [pickupError, setPickupError] = useState("");
@@ -96,8 +148,109 @@ function Booking({ initialTab = "new", onNavigateToVehicles, onBookingsChange })
     };
   }, [onBookingsChange]);
 
+  // Fetch live slot availability whenever serviceDate changes
+  useEffect(() => {
+    if (!serviceDate) return;
+    let isMounted = true;
+    const controller = new AbortController();
+
+    api
+      .get(`/appointments/available-slots?date=${encodeURIComponent(serviceDate)}`, {
+        signal: controller.signal,
+      })
+      .then((res) => {
+        if (isMounted && res.data.success && Array.isArray(res.data.slots)) {
+          const now = new Date();
+          const fetchedSlots = res.data.slots.map((s) => {
+            const isPast = Boolean(s.isPast) || isSlotPastForDate(serviceDate, s.time, now);
+            return {
+              ...s,
+              isPast,
+              isAvailable: !isPast && Boolean(s.isAvailable),
+            };
+          });
+          setSlotList(fetchedSlots);
+          setServiceTime((prevTime) => {
+            const currentSlot = fetchedSlots.find((s) => s.time === prevTime);
+            if (currentSlot && currentSlot.isAvailable) {
+              return prevTime;
+            }
+            const firstAvailable = fetchedSlots.find((s) => s.isAvailable);
+            return firstAvailable ? firstAvailable.time : "";
+          });
+        }
+      })
+      .catch(() => {})
+      .finally(() => {
+        if (isMounted) setLoadingSlots(false);
+      });
+
+    return () => {
+      isMounted = false;
+      controller.abort();
+    };
+  }, [serviceDate, slotRefreshCount]);
+
   const selectedVehicle = vehicles.find((v) => v._id === selectedVehicleId);
   const selectedPackage = packages.find((p) => p._id === selectedPackageId);
+
+  // Reverse-geocode coordinates to a human-readable street/area address
+  const reverseGeocodeAddress = useCallback(async (lat, lng) => {
+    try {
+      const res = await fetch(
+        `https://nominatim.openstreetmap.org/reverse?format=json&lat=${lat}&lon=${lng}`,
+      );
+      const data = await res.json();
+      if (data?.display_name) {
+        setPickupAddress((prev) => prev || data.display_name);
+      }
+    } catch {
+      // Ignore reverse-geocoding network issues
+    }
+  }, []);
+
+  // Detect user's current GPS location (with IP fallback for desktop browsers) and set it on the map
+  const handleUseMyLocation = useCallback(() => {
+    setLocatingUser(true);
+    setPickupError("");
+
+    const applyDetectedCoords = (lat, lng) => {
+      const coords = [Number(Number(lat).toFixed(6)), Number(Number(lng).toFixed(6))];
+      setUserCoords(coords);
+      setExternalStartPoint(coords);
+      reverseGeocodeAddress(coords[0], coords[1]);
+      setLocatingUser(false);
+    };
+
+    const fallbackToIpLocation = async () => {
+      try {
+        const res = await fetch("https://get.geojs.io/v1/ip/geo.json");
+        const data = await res.json();
+        if (data?.latitude && data?.longitude) {
+          applyDetectedCoords(parseFloat(data.latitude), parseFloat(data.longitude));
+          return;
+        }
+      } catch {
+        // Ignore network error
+      }
+      applyDetectedCoords(6.9061, 79.8684);
+    };
+
+    if (!navigator.geolocation) {
+      fallbackToIpLocation();
+      return;
+    }
+
+    navigator.geolocation.getCurrentPosition(
+      (position) => {
+        applyDetectedCoords(position.coords.latitude, position.coords.longitude);
+      },
+      () => {
+        fallbackToIpLocation();
+      },
+      { enableHighAccuracy: false, timeout: 5000, maximumAge: 60000 },
+    );
+  }, [reverseGeocodeAddress]);
 
   // Map route handler for pickup calculation
   const handleMapOrderReady = useCallback(
@@ -123,6 +276,7 @@ function Booking({ initialTab = "new", onNavigateToVehicles, onBookingsChange })
       }
 
       setPickupCoords(coords);
+      reverseGeocodeAddress(lat, lng);
       setCalculatingFare(true);
 
       try {
@@ -149,12 +303,13 @@ function Booking({ initialTab = "new", onNavigateToVehicles, onBookingsChange })
         setCalculatingFare(false);
       }
     },
-    [selectedVehicle],
+    [selectedVehicle, reverseGeocodeAddress],
   );
 
   const handleResetMap = (e) => {
     e.stopPropagation();
     setMapResetCount((prev) => prev + 1);
+    setExternalStartPoint(null);
     setPickupCoords(null);
     setPickupCharge(0);
     setPickupDistanceKm(0);
@@ -176,6 +331,20 @@ function Booking({ initialTab = "new", onNavigateToVehicles, onBookingsChange })
     }
     if (!serviceDate) {
       setError("Please choose a service date.");
+      return;
+    }
+    if (serviceDate < getLocalTodayStr()) {
+      setError("Cannot book an appointment for a past date.");
+      return;
+    }
+    if (!serviceTime) {
+      setError("Please select an available time slot.");
+      return;
+    }
+    if (isSlotPastForDate(serviceDate, serviceTime)) {
+      setError(
+        `The ${serviceTime} slot on ${serviceDate} has already passed. Please select a future time slot or date.`,
+      );
       return;
     }
     if (requiresPickup && !pickupCoords) {
@@ -208,6 +377,7 @@ function Booking({ initialTab = "new", onNavigateToVehicles, onBookingsChange })
         setSuccessMsg(
           "Appointment successfully booked! Initial invoice generated."
         );
+        setSlotRefreshCount((prev) => prev + 1);
         // Refresh bookings
         const bookRes = await api.get("/appointments");
         if (bookRes.data.success) {
@@ -230,9 +400,6 @@ function Booking({ initialTab = "new", onNavigateToVehicles, onBookingsChange })
   const totalEstimate =
     (selectedPackage ? selectedPackage.price : 0) +
     (requiresPickup ? pickupCharge : 0);
-
-  // Today's date in YYYY-MM-DD for min date
-  const todayStr = new Date().toISOString().split("T")[0];
 
   return (
     <div className="space-y-5">
@@ -310,10 +477,144 @@ function Booking({ initialTab = "new", onNavigateToVehicles, onBookingsChange })
           </div>
         ) : (
           <form onSubmit={handleCreateBooking} className="space-y-5">
-            {/* 1. Vehicle Selection */}
+            {/* 1. Check Date & Available Time Slots First */}
+            <section className="rounded-2xl border border-gray-200 bg-white p-5 shadow-2xs sm:p-6">
+              <div className="mb-4 flex flex-wrap items-center justify-between gap-2">
+                <div>
+                  <h2 className="text-sm font-bold text-[#13294b] uppercase tracking-wider">
+                    1. Choose Date &amp; Available Time Slot
+                  </h2>
+                  <p className="mt-0.5 text-xs text-slate-500">
+                    Select your preferred date first to view open workshop slots.
+                  </p>
+                </div>
+                {loadingSlots && (
+                  <span className="text-xs font-medium text-orange-700">
+                    Checking slots...
+                  </span>
+                )}
+              </div>
+
+              <div className="mb-4 max-w-xs space-y-1.5">
+                <label
+                  htmlFor="serviceDate"
+                  className="block text-sm font-medium text-gray-700"
+                >
+                  Service Date
+                </label>
+                <input
+                  type="date"
+                  id="serviceDate"
+                  min={todayStr}
+                  value={serviceDate}
+                  onChange={(e) => {
+                    setLoadingSlots(true);
+                    setServiceDate(e.target.value);
+                  }}
+                  required
+                  className={`w-full rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-orange-700 focus:ring-1 focus:ring-orange-700`}
+                />
+              </div>
+
+              <div>
+                <p className="mb-2 text-xs font-semibold text-slate-600">
+                  Available Time Slots for {serviceDate || todayStr}:
+                </p>
+                <div className="grid grid-cols-2 gap-3 sm:grid-cols-3">
+                  {slotList.map((slot) => {
+                    const isPast =
+                      Boolean(slot.isPast) ||
+                      isSlotPastForDate(serviceDate, slot.time);
+                    const isSlotOpen = !isPast && Boolean(slot.isAvailable);
+                    const isSelected = serviceTime === slot.time && isSlotOpen;
+                    return (
+                      <button
+                        key={slot.time}
+                        type="button"
+                        disabled={!isSlotOpen}
+                        onClick={() => setServiceTime(slot.time)}
+                        className={`flex flex-col items-start justify-between rounded-xl border p-3.5 text-left transition ${
+                          isPast
+                            ? "cursor-not-allowed border-slate-200 bg-slate-100/70 text-slate-400 opacity-75"
+                            : !isSlotOpen
+                              ? "cursor-not-allowed border-red-200 bg-red-50/50 opacity-65"
+                              : isSelected
+                                ? "border-orange-700 bg-[#13294b] text-white shadow-2xs"
+                                : "border-gray-200 bg-white text-[#13294b] hover:border-orange-700/60 hover:bg-orange-50/20"
+                        }`}
+                      >
+                        <div className="flex w-full items-center justify-between gap-2">
+                          <span className="text-sm font-bold">{slot.time}</span>
+                          {isPast ? (
+                            <span className="rounded-full bg-slate-200 px-2 py-0.5 text-[10px] font-semibold text-slate-600">
+                              Time Passed
+                            </span>
+                          ) : isSlotOpen ? (
+                            <span
+                              className={`rounded-full px-2 py-0.5 text-[10px] font-semibold ${
+                                isSelected
+                                  ? "bg-orange-600 text-white"
+                                  : "bg-emerald-50 text-emerald-700"
+                              }`}
+                            >
+                              Available
+                            </span>
+                          ) : (
+                            <span className="rounded-full bg-red-100 px-2 py-0.5 text-[10px] font-semibold text-red-700">
+                              Slot Full
+                            </span>
+                          )}
+                        </div>
+                        <span
+                          className={`mt-1.5 text-[11px] ${
+                            isPast
+                              ? "text-slate-400"
+                              : !isSlotOpen
+                                ? "text-red-600"
+                                : isSelected
+                                  ? "text-slate-200"
+                                  : "text-slate-500"
+                          }`}
+                        >
+                          {isPast
+                            ? "Slot time has passed"
+                            : isSlotOpen
+                              ? `${slot.remaining} of ${slot.maxCapacity} bays open`
+                              : "All bays booked"}
+                        </span>
+                      </button>
+                    );
+                  })}
+                </div>
+
+                {slotList.every(
+                  (s) => Boolean(s.isPast) || isSlotPastForDate(serviceDate, s.time),
+                ) && (
+                  <div className="mt-3 flex flex-wrap items-center justify-between gap-2 rounded-xl border border-amber-200 bg-amber-50 px-3.5 py-2.5 text-xs text-amber-900">
+                    <span>
+                      All workshop time slots for <strong>{serviceDate}</strong> have already passed. Please select a future date.
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        const tmrw = new Date();
+                        tmrw.setDate(tmrw.getDate() + 1);
+                        setLoadingSlots(true);
+                        setServiceDate(getLocalTodayStr(tmrw));
+                      }}
+                      className="rounded-lg bg-amber-800 px-3 py-1 text-[11px] font-semibold text-white transition hover:bg-amber-900"
+                    >
+                      Select Tomorrow →
+                    </button>
+                  </div>
+                )}
+              </div>
+            </section>
+
+            {/* 2. Vehicle Selection */}
             <section className="rounded-2xl border border-gray-200 bg-white p-5 shadow-2xs sm:p-6">
               <h2 className="mb-3 text-sm font-bold text-[#13294b] uppercase tracking-wider">
-                1. Select Vehicle
+                2. Select Vehicle
               </h2>
               <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
                 <div className="space-y-1.5">
@@ -340,10 +641,10 @@ function Booking({ initialTab = "new", onNavigateToVehicles, onBookingsChange })
               </div>
             </section>
 
-            {/* 2. Service Packages Selection */}
+            {/* 3. Service Packages Selection */}
             <section className="rounded-2xl border border-gray-200 bg-white p-5 shadow-2xs sm:p-6">
               <h2 className="mb-3 text-sm font-bold text-[#13294b] uppercase tracking-wider">
-                2. Select Service Package
+                3. Select Service Package
               </h2>
               <div className="grid grid-cols-1 gap-4 md:grid-cols-3">
                 {packages.map((pkg) => {
@@ -393,54 +694,6 @@ function Booking({ initialTab = "new", onNavigateToVehicles, onBookingsChange })
               </div>
             </section>
 
-            {/* 3. Schedule Date & Time Slot */}
-            <section className="rounded-2xl border border-gray-200 bg-white p-5 shadow-2xs sm:p-6">
-              <h2 className="mb-3 text-sm font-bold text-[#13294b] uppercase tracking-wider">
-                3. Choose Date &amp; Time
-              </h2>
-              <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
-                <div className="space-y-1.5">
-                  <label
-                    htmlFor="serviceDate"
-                    className="block text-sm font-medium text-gray-700"
-                  >
-                    Service Date
-                  </label>
-                  <input
-                    type="date"
-                    id="serviceDate"
-                    min={todayStr}
-                    value={serviceDate}
-                    onChange={(e) => setServiceDate(e.target.value)}
-                    required
-                    className={`w-full ${inputClass}`}
-                  />
-                </div>
-
-                <div className="space-y-1.5">
-                  <label
-                    htmlFor="serviceTime"
-                    className="block text-sm font-medium text-gray-700"
-                  >
-                    Time Slot
-                  </label>
-                  <select
-                    id="serviceTime"
-                    value={serviceTime}
-                    onChange={(e) => setServiceTime(e.target.value)}
-                    required
-                    className="w-full rounded-lg border border-gray-300 bg-white px-3 py-2.5 text-sm text-gray-900 outline-none transition focus:border-orange-700 focus:ring-1 focus:ring-orange-700"
-                  >
-                    {TIME_SLOTS.map((slot) => (
-                      <option key={slot} value={slot}>
-                        {slot}
-                      </option>
-                    ))}
-                  </select>
-                </div>
-              </div>
-            </section>
-
             {/* 4. Pickup & Delivery Service (SmartMap Integration) */}
             <section className="rounded-2xl border border-gray-200 bg-white p-5 shadow-2xs sm:p-6">
               <div className="flex items-center justify-between">
@@ -461,8 +714,10 @@ function Booking({ initialTab = "new", onNavigateToVehicles, onBookingsChange })
                     type="checkbox"
                     checked={requiresPickup}
                     onChange={(e) => {
-                      setRequiresPickup(e.target.checked);
-                      if (!e.target.checked) {
+                      const checked = e.target.checked;
+                      setRequiresPickup(checked);
+                      if (!checked) {
+                        setExternalStartPoint(null);
                         setPickupCoords(null);
                         setPickupCharge(0);
                         setPickupDistanceKm(0);
@@ -477,14 +732,28 @@ function Booking({ initialTab = "new", onNavigateToVehicles, onBookingsChange })
 
               {requiresPickup && (
                 <div className="mt-5 space-y-4 border-t border-gray-100 pt-4">
-                  <Input
-                    id="pickupAddress"
-                    label="Pickup Address / Landmark"
-                    placeholder="e.g. No 45, Galle Road, Bambalapitiya"
-                    value={pickupAddress}
-                    onChange={(e) => setPickupAddress(e.target.value)}
-                    className={inputClass}
-                  />
+                  <div className="flex flex-col gap-2 sm:flex-row sm:items-end">
+                    <div className="flex-1">
+                      <Input
+                        id="pickupAddress"
+                        label="Pickup Address / Landmark"
+                        placeholder="e.g. No 45, Galle Road, Bambalapitiya"
+                        value={pickupAddress}
+                        onChange={(e) => setPickupAddress(e.target.value)}
+                        className={inputClass}
+                      />
+                    </div>
+                    <button
+                      type="button"
+                      disabled={locatingUser}
+                      onClick={handleUseMyLocation}
+                      className="rounded-lg border border-blue-200 bg-blue-50 px-3.5 py-2.5 text-xs font-semibold text-blue-800 transition hover:bg-blue-100 disabled:opacity-50"
+                    >
+                      {locatingUser
+                        ? "Detecting Location..."
+                        : "Use My Current Location"}
+                    </button>
+                  </div>
 
                   <div className="flex flex-wrap items-center justify-between gap-2 rounded-xl border border-gray-200 bg-slate-50 p-3 text-xs text-[#13294b]">
                     <div className="flex items-center gap-2">
@@ -521,6 +790,8 @@ function Booking({ initialTab = "new", onNavigateToVehicles, onBookingsChange })
                         resetTrigger={mapResetCount}
                         workshops={workshops}
                         shopCoords={[6.9271, 79.8612]}
+                        userLocation={userCoords}
+                        externalStartPoint={externalStartPoint}
                         mode="routing"
                         theme="light"
                         showSearchBox={true}
@@ -632,6 +903,14 @@ function Booking({ initialTab = "new", onNavigateToVehicles, onBookingsChange })
                         {app.packageId?.packageName || "Service Package"} · {dateStr} at{" "}
                         {app.serviceTime}
                       </p>
+                      {app.requiresPickup && app.pickupLocation?.address && (
+                        <p className="mt-1 text-xs text-slate-600">
+                          Pickup Location:{" "}
+                          <strong className="text-[#13294b]">
+                            {app.pickupLocation.address}
+                          </strong>
+                        </p>
+                      )}
                     </div>
 
                     <div className="flex items-center gap-2">

@@ -327,7 +327,7 @@ exports.updateProfile = async (req, res, next) => {
         email: normalizedEmail,
         contactNo: normalizedContactNo,
       },
-      { new: true, runValidators: true },
+      { returnDocument: "after", runValidators: true },
     );
 
     res.status(200).json({

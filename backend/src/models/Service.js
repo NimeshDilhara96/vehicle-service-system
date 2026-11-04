@@ -2,10 +2,16 @@ const mongoose = require("mongoose");
 
 const serviceSchema = new mongoose.Schema(
   {
+    appointmentId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "Appointment",
+      required: true,
+      unique: true,
+      index: true,
+    },
     customerId: {
       type: mongoose.Schema.Types.ObjectId,
       ref: "User",
-      required: true,
       index: true,
     },
     vehicleId: {
@@ -15,42 +21,49 @@ const serviceSchema = new mongoose.Schema(
       index: true,
     },
     vehicleSnapshot: {
-      registrationNo: { type: String, required: true },
-      vehicleType: { type: String, required: true },
+      registrationNo: { type: String },
+      vehicleType: { type: String },
       brand: { type: String },
       modelName: { type: String },
-    },
-    appointmentId: {
-      type: mongoose.Schema.Types.ObjectId,
-      ref: "Appointment",
     },
     mechanicId: {
       type: mongoose.Schema.Types.ObjectId,
       ref: "User",
+      required: true,
+      index: true,
     },
-    driverId: {
+    bayId: {
       type: mongoose.Schema.Types.ObjectId,
-      ref: "User",
+      ref: "ServiceBay",
+      required: true,
+      index: true,
     },
     status: {
       type: String,
       enum: [
         "Vehicle Received",
         "Inspection",
-        "Service",
-        "Additional Work Approval",
-        "Service Completed",
-        "Ready for Delivery",
+        "In Progress",
+        "Waiting for Parts",
+        "Completed",
       ],
       default: "Vehicle Received",
     },
-    description: {
+    inspectionNotes: {
       type: String,
       trim: true,
+      maxlength: [2000, "Inspection notes cannot exceed 2000 characters"],
+      default: "",
+    },
+    additionalWorkRequired: {
+      type: Boolean,
+      default: false,
     },
   },
-  { timestamps: true },
+  {
+    timestamps: true,
+    optimisticConcurrency: true,
+  },
 );
 
 module.exports = mongoose.model("Service", serviceSchema);
-

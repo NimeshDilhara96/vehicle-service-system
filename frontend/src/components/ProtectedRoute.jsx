@@ -3,14 +3,18 @@ import { useAuth } from "../context/AuthContext";
 
 // eslint-disable-next-line react-refresh/only-export-components
 export function getDashboardPathByRole(role) {
-  switch (role) {
-    case "Admin":
+  const normalizedRole = String(role || "")
+    .trim()
+    .toLowerCase();
+
+  switch (normalizedRole) {
+    case "admin":
       return "/admin-dashboard";
-    case "Driver":
+    case "driver":
       return "/driver-dashboard";
-    case "Mechanic":
+    case "mechanic":
       return "/mechanic-dashboard";
-    case "Customer":
+    case "customer":
     default:
       return "/user-dashboard";
   }
@@ -27,8 +31,17 @@ function ProtectedRoute({ allowedRoles, children }) {
     return <Navigate to="/login" replace />;
   }
 
-  if (allowedRoles && !allowedRoles.includes(user.role)) {
-    return <Navigate to={getDashboardPathByRole(user.role)} replace />;
+  if (allowedRoles) {
+    const userRoleNorm = String(user.role || "")
+      .trim()
+      .toLowerCase();
+    const isAllowed = allowedRoles.some(
+      (r) => String(r).trim().toLowerCase() === userRoleNorm,
+    );
+
+    if (!isAllowed) {
+      return <Navigate to={getDashboardPathByRole(user.role)} replace />;
+    }
   }
 
   return children;

@@ -5,6 +5,8 @@ const cookieParser = require("cookie-parser");
 const authRoutes = require("./routes/authRoutes");
 const vehicleRoutes = require("./routes/vehicleRoutes");
 const appointmentRoutes = require("./routes/appointmentRoutes");
+const adminDriverRoutes = require("./routes/adminDriverRoutes");
+const serviceBayRoutes = require("./routes/serviceBayRoutes");
 
 const app = express();
 
@@ -26,6 +28,8 @@ app.use(cookieParser());
 app.use("/api/auth", authRoutes);
 app.use("/api/vehicles", vehicleRoutes);
 app.use("/api/appointments", appointmentRoutes);
+app.use("/api/admin/drivers", adminDriverRoutes);
+app.use("/api/service-bays", serviceBayRoutes);
 
 // Error Handler
 app.use((err, req, res, next) => {

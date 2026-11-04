@@ -22,7 +22,8 @@
     "helmet": "^8.3.0",
     "jsonwebtoken": "^9.0.3",
     "mongoose": "^9.10.4",
-    "smartmap-pro": "file:../packages/smartmap-pro-1.0.0.tgz"
+    "smartmap-pro": "file:../packages/smartmap-pro-1.0.0.tgz",
+    "zod": "^4.6.7"
   },
   "devDependencies": {
     "jest": "^30.5.2",

@@ -16,11 +16,25 @@ const mapRateLimiter = rateLimit({
   },
 });
 
-// Public/Authenticated route to view available packages & workshops
+// Public/Authenticated route to view available packages, workshops & live slot availability
 router.get("/packages", appointmentController.getServicePackages);
+router.get("/available-slots", appointmentController.getAvailableSlots);
 
-// All routes below require Customer login
+// All routes below require authentication
 router.use(protect);
+
+// Admin routes for real-time booking management
+router.get(
+  "/admin",
+  restrictTo("Admin"),
+  appointmentController.getAllAppointmentsAdmin,
+);
+
+router.patch(
+  "/admin/:id/status",
+  restrictTo("Admin"),
+  appointmentController.updateAppointmentStatusAdmin,
+);
 
 // Calculate pickup fee via smartmap-pro
 router.post(

@@ -3,12 +3,18 @@ import { useNavigate } from "react-router-dom";
 import { useAuth } from "../../context/AuthContext";
 import api from "../../services/api";
 import Profile from "../customer/Profile";
+import ViewBooking from "./ViewBooking";
+import PickupDispatch from "./PickupDispatch";
+import DriverManagement from "./DriverManagement";
+import ServiceBayManagement from "./ServiceBayManagement";
 
 const adminNavItems = [
   { label: "Dashboard" },
   { label: "Appointments" },
+  { label: "Service Bays" },
+  { label: "Pickup Dispatch" },
+  { label: "Drivers" },
   { label: "Workshops" },
-  { label: "Staff (Drivers & Mechanics)" },
   { label: "Invoices & Reports" },
   { label: "Profile" },
 ];
@@ -116,10 +122,18 @@ function AdminDashboard() {
       <main className="flex-1 px-4 pt-4 pb-24 sm:px-6 lg:px-10 lg:py-8">
         <div className="mx-auto max-w-5xl space-y-5">
           {activeTab === "Profile" ? (
-            <Profile
-              showCustomerStats={false}
-              onLogout={handleLogout}
+            <Profile showCustomerStats={false} onLogout={handleLogout} />
+          ) : activeTab === "Appointments" ? (
+            <ViewBooking
+              onOpenDispatch={() => setActiveTab("Pickup Dispatch")}
+              onOpenBayControl={() => setActiveTab("Service Bays")}
             />
+          ) : activeTab === "Service Bays" ? (
+            <ServiceBayManagement />
+          ) : activeTab === "Pickup Dispatch" ? (
+            <PickupDispatch />
+          ) : activeTab === "Drivers" ? (
+            <DriverManagement />
           ) : (
             <>
               <div className="flex flex-wrap items-center justify-between gap-3">
@@ -128,12 +142,28 @@ function AdminDashboard() {
                     Admin Dashboard — {displayName}
                   </h1>
                   <p className="mt-0.5 text-sm text-slate-500" title={message}>
-                    Manage workshop branches, service packages, drivers, mechanics, and bookings.
+                    Manage workshop branches, service bays, packages, drivers, mechanics, and real-time bookings.
                   </p>
                 </div>
-                <span className="rounded-full bg-[#fef3e2] px-3.5 py-1 text-xs font-semibold text-orange-800">
-                  Role: {user?.role || "Admin"}
-                </span>
+                <div className="flex flex-wrap items-center gap-2.5">
+                  <button
+                    type="button"
+                    onClick={() => setActiveTab("Service Bays")}
+                    className="rounded-lg bg-[#13294b] px-4 py-2 text-xs font-semibold text-white transition hover:bg-[#1a3663]"
+                  >
+                    Service Bay Control
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setActiveTab("Appointments")}
+                    className="rounded-lg bg-orange-700 px-4 py-2 text-xs font-semibold text-white transition hover:bg-orange-800"
+                  >
+                    View All Bookings
+                  </button>
+                  <span className="rounded-full bg-[#fef3e2] px-3.5 py-1 text-xs font-semibold text-orange-800">
+                    Role: {user?.role || "Admin"}
+                  </span>
+                </div>
               </div>
 
               {/* KPI Summary Cards */}
@@ -207,6 +237,15 @@ function AdminDashboard() {
                   ))}
                 </div>
               </section>
+
+              {/* Service Bay Control Section Embedded in Dashboard */}
+              <ServiceBayManagement />
+
+              {/* Real-Time Bookings Section Embedded in Dashboard */}
+              <ViewBooking
+                onOpenDispatch={() => setActiveTab("Pickup Dispatch")}
+                onOpenBayControl={() => setActiveTab("Service Bays")}
+              />
             </>
           )}
         </div>
@@ -216,4 +255,3 @@ function AdminDashboard() {
 }
 
 export default AdminDashboard;
-

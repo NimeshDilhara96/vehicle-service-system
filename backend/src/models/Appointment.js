@@ -48,6 +48,7 @@ const appointmentSchema = new mongoose.Schema(
       type: String,
       enum: ["Pending", "Confirmed", "In Progress", "Completed", "Cancelled"],
       default: "Pending",
+      index: true,
     },
   },
   {
@@ -55,5 +56,10 @@ const appointmentSchema = new mongoose.Schema(
     optimisticConcurrency: true, // Enable optimistic concurrency control to prevent race conditions during updates
   },
 );
+
+// Compound indexes for optimized Admin dashboard filtering & sorting
+appointmentSchema.index({ status: 1, serviceDate: -1 });
+appointmentSchema.index({ createdAt: -1 });
+appointmentSchema.index({ "vehicleSnapshot.registrationNo": 1 });
 
 module.exports = mongoose.model("Appointment", appointmentSchema);

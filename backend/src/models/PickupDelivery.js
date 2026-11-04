@@ -1,5 +1,37 @@
 const mongoose = require("mongoose");
 
+const taskLogEntrySchema = new mongoose.Schema(
+  {
+    status: {
+      type: String,
+      required: true,
+      trim: true,
+    },
+    note: {
+      type: String,
+      default: "",
+      trim: true,
+      maxlength: [250, "Log note cannot exceed 250 characters"],
+    },
+    updatedByRole: {
+      type: String,
+      enum: ["Admin", "Driver", "Customer", "System"],
+      default: "System",
+    },
+    updatedByName: {
+      type: String,
+      default: "System",
+      trim: true,
+      maxlength: [100, "Updater name cannot exceed 100 characters"],
+    },
+    timestamp: {
+      type: Date,
+      default: Date.now,
+    },
+  },
+  { _id: false },
+);
+
 const pickupDeliverySchema = new mongoose.Schema(
   {
     appointmentId: {
@@ -17,8 +49,9 @@ const pickupDeliverySchema = new mongoose.Schema(
     },
     driverId: {
       type: mongoose.Schema.Types.ObjectId,
-      ref: "User",
+      ref: "Driver",
       default: null,
+      index: true,
     },
     pickupLocation: {
       address: { type: String, required: true, trim: true },
@@ -51,10 +84,34 @@ const pickupDeliverySchema = new mongoose.Schema(
         "Cancelled",
       ],
       default: "Pending Assignment",
+      index: true,
+    },
+    assignedAt: {
+      type: Date,
+      default: null,
+    },
+    completedAt: {
+      type: Date,
+      default: null,
+    },
+    statusLogs: {
+      type: [taskLogEntrySchema],
+      default: () => [
+        {
+          status: "Pending Assignment",
+          note: "Pickup & delivery request created with booking.",
+          updatedByRole: "Customer",
+          updatedByName: "Customer Booking",
+          timestamp: new Date(),
+        },
+      ],
     },
   },
   { timestamps: true },
 );
 
-module.exports = mongoose.model("PickupDelivery", pickupDeliverySchema);
+// Compound indexes for O(log N) driver active-task aggregation & task history queries
+pickupDeliverySchema.index({ driverId: 1, pickupStatus: 1 });
+pickupDeliverySchema.index({ driverId: 1, updatedAt: -1 });
 
+module.exports = mongoose.model("PickupDelivery", pickupDeliverySchema);
