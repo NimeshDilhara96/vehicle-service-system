@@ -29,5 +29,12 @@ router.patch(
   serviceBayController.updateBayStatus,
 );
 
+router.patch(
+  "/:id/job-sheet",
+  restrictTo("Admin", "Mechanic"),
+  bayWriteLimiter,
+  serviceBayController.updateJobSheet,
+);
+
 module.exports = router;
 

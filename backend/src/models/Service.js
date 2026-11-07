@@ -43,11 +43,12 @@ const serviceSchema = new mongoose.Schema(
       enum: [
         "Vehicle Received",
         "Inspection",
+        "Waiting for Approval",
         "In Progress",
         "Waiting for Parts",
         "Completed",
       ],
-      default: "Vehicle Received",
+      default: "Inspection",
     },
     inspectionNotes: {
       type: String,

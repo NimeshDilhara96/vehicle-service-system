@@ -10,6 +10,54 @@ const BAY_TYPES = [
   "General",
 ];
 
+const SERVICE_STAGES = [
+  "Inspection",
+  "Waiting for Approval",
+  "In Progress",
+  "Waiting for Parts",
+  "Completed",
+];
+
+// Unidirectional stage transitions - previous stages cannot be selected
+const ALLOWED_STAGE_TRANSITIONS = {
+  "Vehicle Received": [
+    "Inspection",
+    "Waiting for Approval",
+    "In Progress",
+    "Waiting for Parts",
+    "Completed",
+  ],
+  Inspection: [
+    "Waiting for Approval",
+    "In Progress",
+    "Waiting for Parts",
+    "Completed",
+  ],
+  "Waiting for Approval": [
+    "In Progress",
+    "Waiting for Parts",
+    "Completed",
+  ],
+  "In Progress": [
+    "Waiting for Parts",
+    "Completed",
+  ],
+  "Waiting for Parts": [
+    "In Progress",
+    "Completed",
+  ],
+  Completed: [],
+};
+
+const STAGE_BADGE = {
+  "Vehicle Received": "bg-slate-100 text-slate-700",
+  Inspection: "bg-sky-100 text-sky-800",
+  "Waiting for Approval": "bg-amber-100 text-amber-800",
+  "In Progress": "bg-blue-100 text-blue-800",
+  "Waiting for Parts": "bg-purple-100 text-purple-800",
+  Completed: "bg-emerald-100 text-emerald-800",
+};
+
 function ServiceBayManagement() {
   const [bays, setBays] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -19,9 +67,18 @@ function ServiceBayManagement() {
   const [error, setError] = useState("");
   const [successMsg, setSuccessMsg] = useState("");
 
-  // Add Bay Form State
+  // Add Bay (collapsible)
+  const [showAddForm, setShowAddForm] = useState(false);
   const [bayName, setBayName] = useState("");
   const [bayType, setBayType] = useState("General");
+
+  // Job Sheet modal
+  const [sheetBayId, setSheetBayId] = useState(null);
+  const [sheetOriginalStage, setSheetOriginalStage] = useState("Inspection");
+  const [sheetStage, setSheetStage] = useState("");
+  const [sheetNotes, setSheetNotes] = useState("");
+  const [sheetAdditional, setSheetAdditional] = useState(false);
+  const [savingSheet, setSavingSheet] = useState(false);
 
   useEffect(() => {
     let isMounted = true;
@@ -78,6 +135,7 @@ function ServiceBayManagement() {
         setBays((prev) => [...prev, res.data.bay]);
         setBayName("");
         setBayType("General");
+        setShowAddForm(false);
         setSuccessMsg(res.data.message || "Service bay added successfully.");
       }
     } catch (err) {
@@ -117,31 +175,52 @@ function ServiceBayManagement() {
     }
   };
 
+  const openJobSheet = (bay) => {
+    const svc = bay.currentServiceId;
+    const current = svc?.status || "Inspection";
+    setSheetBayId(bay._id);
+    setSheetOriginalStage(current);
+    setSheetStage(current);
+    setSheetNotes(svc?.inspectionNotes || "");
+    setSheetAdditional(Boolean(svc?.additionalWorkRequired));
+  };
+
+  const handleSaveJobSheet = async (e) => {
+    e.preventDefault();
+    setError("");
+    setSuccessMsg("");
+    setSavingSheet(true);
+
+    try {
+      const res = await api.patch(`/service-bays/${sheetBayId}/job-sheet`, {
+        status: sheetStage,
+        inspectionNotes: sheetNotes,
+        additionalWorkRequired: sheetAdditional,
+      });
+
+      if (res.data.success && res.data.bay) {
+        setBays((prev) =>
+          prev.map((b) => (b._id === sheetBayId ? res.data.bay : b)),
+        );
+        setSuccessMsg(res.data.message || "Job sheet updated.");
+        setSheetBayId(null);
+      }
+    } catch (err) {
+      setError(err.response?.data?.message || "Failed to update job sheet.");
+    } finally {
+      setSavingSheet(false);
+    }
+  };
+
   const summary = useMemo(() => {
     let available = 0;
-    let occupied = 0;
-    const occupiedVehicles = [];
-
     for (const b of bays) {
-      if (b.isAvailable) {
-        available += 1;
-      } else {
-        occupied += 1;
-        if (b.currentServiceId) {
-          occupiedVehicles.push({
-            bayId: b._id,
-            bayName: b.bayName,
-            bayType: b.bayType,
-            service: b.currentServiceId,
-          });
-        }
-      }
+      if (b.isAvailable) available += 1;
     }
     return {
       total: bays.length,
       available,
-      occupied,
-      occupiedVehicles,
+      occupied: bays.length - available,
     };
   }, [bays]);
 
@@ -154,25 +233,33 @@ function ServiceBayManagement() {
             Service Bay Control
           </h1>
           <p className="mt-0.5 text-sm text-slate-500">
-            Manage workshop bays, monitor occupied vehicles, and release bays
-            when vehicles exit.
+            One vehicle per bay. Track each vehicle&apos;s stage and job sheet.
           </p>
         </div>
 
-        <button
-          type="button"
-          onClick={() => setRefreshCount((prev) => prev + 1)}
-          className="rounded-lg bg-[#13294b] px-3.5 py-2 text-xs font-semibold text-white transition hover:bg-[#1a3660]"
-        >
-          Refresh Bays
-        </button>
+        <div className="flex items-center gap-2">
+          <button
+            type="button"
+            onClick={() => setShowAddForm((prev) => !prev)}
+            className="rounded-lg border border-gray-300 bg-white px-3.5 py-2 text-xs font-semibold text-[#13294b] transition hover:bg-slate-50"
+          >
+            {showAddForm ? "Close" : "+ Add Bay"}
+          </button>
+          <button
+            type="button"
+            onClick={() => setRefreshCount((prev) => prev + 1)}
+            className="rounded-lg bg-[#13294b] px-3.5 py-2 text-xs font-semibold text-white transition hover:bg-[#1a3660]"
+          >
+            Refresh
+          </button>
+        </div>
       </div>
 
       <Alert type="error">{error}</Alert>
       <Alert type="success">{successMsg}</Alert>
 
-      {/* Summary KPI Cards */}
-      <div className="grid grid-cols-1 gap-3 sm:grid-cols-4">
+      {/* Summary */}
+      <div className="grid grid-cols-3 gap-3">
         <div className="rounded-2xl border border-gray-200 bg-white p-4 shadow-2xs">
           <p className="text-xs font-medium text-slate-500">Total Bays</p>
           <p className="mt-1 text-2xl font-extrabold text-[#13294b]">
@@ -180,36 +267,25 @@ function ServiceBayManagement() {
           </p>
         </div>
         <div className="rounded-2xl border border-emerald-200 bg-white p-4 shadow-2xs">
-          <p className="text-xs font-medium text-slate-500">
-            Available (Open) Bays
-          </p>
+          <p className="text-xs font-medium text-slate-500">Available</p>
           <p className="mt-1 text-2xl font-extrabold text-emerald-700">
             {summary.available}
           </p>
         </div>
         <div className="rounded-2xl border border-orange-200 bg-white p-4 shadow-2xs">
-          <p className="text-xs font-medium text-slate-500">Occupied Bays</p>
+          <p className="text-xs font-medium text-slate-500">Occupied</p>
           <p className="mt-1 text-2xl font-extrabold text-orange-700">
             {summary.occupied}
           </p>
         </div>
-        <div className="rounded-2xl border border-blue-200 bg-white p-4 shadow-2xs">
-          <p className="text-xs font-medium text-slate-500">Vehicles in Bay</p>
-          <p className="mt-1 text-2xl font-extrabold text-blue-700">
-            {summary.occupiedVehicles.length}
-          </p>
-        </div>
       </div>
 
-      {/* Add New Service Bay Form */}
-      <form
-        onSubmit={handleAddBay}
-        className="rounded-2xl border border-gray-200 bg-white p-4 shadow-2xs sm:p-5"
-      >
-        <h2 className="mb-3 text-sm font-bold text-[#13294b]">
-          Add New Service Bay
-        </h2>
-        <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
+      {/* Add New Service Bay (collapsible) */}
+      {showAddForm && (
+        <form
+          onSubmit={handleAddBay}
+          className="grid grid-cols-1 gap-3 rounded-2xl border border-gray-200 bg-white p-4 shadow-2xs sm:grid-cols-3 sm:p-5"
+        >
           <div>
             <label
               htmlFor="bayName"
@@ -255,248 +331,316 @@ function ServiceBayManagement() {
               disabled={submitting}
               className="w-full rounded-lg bg-orange-700 px-4 py-2 text-xs font-semibold text-white transition hover:bg-orange-800 disabled:opacity-50"
             >
-              {submitting ? "Adding..." : "+ Add Service Bay"}
+              {submitting ? "Adding..." : "Save Bay"}
             </button>
           </div>
-        </div>
-      </form>
-
-      {/* Vehicles Currently in Workshop Bays Table */}
-      {summary.occupiedVehicles.length > 0 && (
-        <section className="overflow-hidden rounded-2xl border border-orange-200 bg-white shadow-2xs">
-          <div className="border-b border-orange-100 bg-orange-50/60 px-5 py-3.5">
-            <div className="flex items-center justify-between">
-              <div className="flex items-center gap-2">
-                <span className="inline-flex h-2.5 w-2.5 rounded-full bg-orange-500 animate-pulse" />
-                <h2 className="text-sm font-bold text-[#13294b]">
-                  Vehicles Currently in Service Bays ({summary.occupiedVehicles.length})
-                </h2>
-              </div>
-              <span className="rounded-full bg-orange-100 px-3 py-0.5 text-[11px] font-bold text-orange-800">
-                Live Workshop Activity
-              </span>
-            </div>
-          </div>
-
-          <div className="overflow-x-auto">
-            <table className="w-full text-left text-xs">
-              <thead className="border-b border-gray-100 bg-slate-50 text-[11px] font-bold tracking-wider text-slate-500 uppercase">
-                <tr>
-                  <th className="px-4 py-3">Bay</th>
-                  <th className="px-4 py-3">Vehicle</th>
-                  <th className="px-4 py-3">Customer</th>
-                  <th className="px-4 py-3">Assigned Mechanic</th>
-                  <th className="px-4 py-3">Service Stage</th>
-                  <th className="px-4 py-3">In Bay Since</th>
-                  <th className="px-4 py-3 text-right">Action</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-gray-100">
-                {summary.occupiedVehicles.map((item) => {
-                  const s = item.service;
-                  const vSnap = s.vehicleSnapshot || {};
-                  const cust = s.appointmentId?.customerDetails || s.customerId || {};
-                  const mech = s.mechanicId || {};
-                  const bayObj = bays.find((b) => b._id === item.bayId);
-
-                  return (
-                    <tr key={item.bayId} className="hover:bg-slate-50/80 transition">
-                      <td className="px-4 py-3 font-semibold text-[#13294b] whitespace-nowrap">
-                        <span className="rounded-md bg-[#13294b] px-2 py-0.5 text-[11px] font-bold text-white">
-                          {item.bayName}
-                        </span>
-                        <span className="ml-1.5 text-[11px] text-slate-500">
-                          ({item.bayType})
-                        </span>
-                      </td>
-
-                      <td className="px-4 py-3 whitespace-nowrap">
-                        <span className="inline-block rounded border border-black bg-yellow-400 px-2 py-0.5 text-[11px] font-extrabold tracking-wider text-black">
-                          {vSnap.registrationNo || "Vehicle"}
-                        </span>
-                        <div className="mt-0.5 text-xs font-semibold text-slate-700">
-                          {[vSnap.brand, vSnap.modelName].filter(Boolean).join(" ") ||
-                            vSnap.vehicleType ||
-                            "Vehicle"}
-                        </div>
-                      </td>
-
-                      <td className="px-4 py-3 whitespace-nowrap">
-                        <p className="font-semibold text-slate-800">{cust.name || "Customer"}</p>
-                        <p className="text-[11px] text-slate-500">{cust.phone || cust.contactNo || "—"}</p>
-                      </td>
-
-                      <td className="px-4 py-3 whitespace-nowrap">
-                        <span className="font-medium text-slate-700">
-                          {mech.name || "Unassigned"}
-                        </span>
-                        {mech.contactNo && (
-                          <p className="text-[11px] text-slate-500">{mech.contactNo}</p>
-                        )}
-                      </td>
-
-                      <td className="px-4 py-3 whitespace-nowrap">
-                        <span className="inline-block rounded-full bg-blue-100 px-2.5 py-0.5 text-[11px] font-bold text-blue-800">
-                          {s.status}
-                        </span>
-                      </td>
-
-                      <td className="px-4 py-3 whitespace-nowrap text-slate-500">
-                        {s.createdAt
-                          ? new Date(s.createdAt).toLocaleTimeString([], {
-                              hour: "2-digit",
-                              minute: "2-digit",
-                            })
-                          : "—"}
-                      </td>
-
-                      <td className="px-4 py-3 text-right whitespace-nowrap">
-                        {bayObj && (
-                          <button
-                            type="button"
-                            disabled={togglingId === bayObj._id}
-                            onClick={() => handleToggleBayStatus(bayObj)}
-                            className="rounded-lg bg-emerald-700 px-3 py-1.5 text-[11px] font-semibold text-white transition hover:bg-emerald-800 disabled:opacity-50"
-                          >
-                            {togglingId === bayObj._id ? "Releasing..." : "Release Bay"}
-                          </button>
-                        )}
-                      </td>
-                    </tr>
-                  );
-                })}
-              </tbody>
-            </table>
-          </div>
-        </section>
+        </form>
       )}
 
-      {/* Service Bays Grid */}
+      {/* Bay Cards */}
       {loading ? (
         <div className="rounded-2xl border border-gray-200 bg-white p-8 text-center text-sm text-slate-500 shadow-2xs">
           Loading service bays...
         </div>
       ) : (
-        <div className="grid grid-cols-1 gap-4 md:grid-cols-3">
+        <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
           {bays.map((bay) => {
-            const activeService = bay.currentServiceId || null;
-            const vehicleSnap = activeService?.vehicleSnapshot || null;
-            const cust =
-              activeService?.appointmentId?.customerDetails ||
-              activeService?.customerId ||
-              {};
-            const mech = activeService?.mechanicId || {};
+            const svc = bay.currentServiceId || null;
+            const vSnap = svc?.vehicleSnapshot || null;
+            const cust = svc?.customerId || {};
+            const mech = svc?.mechanicId || {};
+            const inService = !bay.isAvailable && svc;
 
             return (
               <div
                 key={bay._id}
-                className={`flex flex-col justify-between rounded-2xl border p-5 shadow-2xs transition ${
-                  bay.isAvailable
-                    ? "border-emerald-200 bg-white"
-                    : "border-orange-200 bg-orange-50/20"
+                className={`flex flex-col rounded-2xl border bg-white p-4 shadow-2xs ${
+                  bay.isAvailable ? "border-emerald-200" : "border-orange-200"
                 }`}
               >
-                <div>
-                  <div className="flex items-start justify-between gap-2">
-                    <div>
-                      <h3 className="text-base font-bold text-[#13294b]">
-                        {bay.bayName}
-                      </h3>
-                      <span className="mt-1 inline-block rounded-md bg-slate-100 px-2 py-0.5 text-[11px] font-semibold text-slate-600">
-                        {bay.bayType}
-                      </span>
-                    </div>
-
-                    <span
-                      className={`rounded-full border px-2.5 py-0.5 text-[11px] font-semibold ${
-                        bay.isAvailable
-                          ? "border-emerald-200 bg-emerald-50 text-emerald-800"
-                          : "border-orange-200 bg-orange-100 text-orange-900"
-                      }`}
-                    >
-                      {bay.isAvailable ? "Available" : "Occupied"}
-                    </span>
+                <div className="flex items-start justify-between gap-2">
+                  <div>
+                    <h3 className="text-sm font-bold text-[#13294b]">
+                      {bay.bayName}
+                    </h3>
+                    <p className="text-[11px] text-slate-500">{bay.bayType}</p>
                   </div>
+                  <span
+                    className={`rounded-full px-2.5 py-0.5 text-[11px] font-semibold ${
+                      bay.isAvailable
+                        ? "bg-emerald-50 text-emerald-700"
+                        : "bg-orange-100 text-orange-800"
+                    }`}
+                  >
+                    {bay.isAvailable ? "Available" : "Occupied"}
+                  </span>
+                </div>
 
-                  {activeService && vehicleSnap ? (
-                    <div className="mt-4 space-y-2 rounded-xl border border-orange-200 bg-white p-3.5 shadow-2xs">
+                <div className="mt-3 flex-1">
+                  {inService && vSnap ? (
+                    <div className="space-y-2">
                       <div className="flex items-center justify-between gap-2">
-                        <span className="inline-block rounded-md border-2 border-black bg-yellow-400 px-2.5 py-0.5 text-[11px] font-extrabold tracking-widest text-black uppercase">
-                          {vehicleSnap.registrationNo || "Vehicle"}
+                        <span className="inline-block rounded border-2 border-black bg-yellow-400 px-2 py-0.5 text-[11px] font-extrabold tracking-widest text-black uppercase">
+                          {vSnap.registrationNo || "Vehicle"}
                         </span>
-                        <span className="rounded-full bg-blue-100 px-2 py-0.5 text-[10px] font-bold text-blue-800">
-                          {activeService.status}
+                        <span
+                          className={`rounded-full px-2 py-0.5 text-[10px] font-bold ${
+                            STAGE_BADGE[svc.status] ||
+                            "bg-slate-100 text-slate-700"
+                          }`}
+                        >
+                          {svc.status}
                         </span>
                       </div>
 
-                      <p className="text-xs font-bold text-[#13294b]">
-                        {[vehicleSnap.brand, vehicleSnap.modelName]
+                      <p className="text-xs font-semibold text-[#13294b]">
+                        {[vSnap.brand, vSnap.modelName]
                           .filter(Boolean)
-                          .join(" ") || vehicleSnap.vehicleType}
+                          .join(" ") || vSnap.vehicleType}
                       </p>
 
-                      <div className="border-t border-dashed border-gray-200 pt-2 text-[11px] text-slate-600 space-y-1">
-                        <p className="flex justify-between">
-                          <span className="text-slate-400">Customer:</span>
-                          <span className="font-semibold text-slate-800">
-                            {cust.name || "Customer"}{" "}
-                            {cust.phone ? `(${cust.phone})` : ""}
-                          </span>
+                      <p className="text-[11px] text-slate-500">
+                        {cust.name || "Customer"} · Mechanic:{" "}
+                        {mech.name || "Unassigned"}
+                      </p>
+
+                      {svc.additionalWorkRequired && (
+                        <span className="inline-block rounded-full bg-red-50 px-2 py-0.5 text-[10px] font-semibold text-red-700">
+                          ⚠ Additional work required
+                        </span>
+                      )}
+
+                      {svc.inspectionNotes && (
+                        <p className="line-clamp-2 rounded-lg bg-slate-50 px-2.5 py-1.5 text-[11px] text-slate-600">
+                          {svc.inspectionNotes}
                         </p>
-                        <p className="flex justify-between">
-                          <span className="text-slate-400">Mechanic:</span>
-                          <span className="font-semibold text-slate-800">
-                            {mech.name || "Assigned"}
-                          </span>
-                        </p>
-                        {activeService.createdAt && (
-                          <p className="flex justify-between">
-                            <span className="text-slate-400">Started:</span>
-                            <span className="text-slate-600">
-                              {new Date(activeService.createdAt).toLocaleTimeString(
-                                [],
-                                { hour: "2-digit", minute: "2-digit" },
-                              )}
-                            </span>
-                          </p>
-                        )}
-                      </div>
+                      )}
                     </div>
                   ) : (
-                    <div className="mt-4 rounded-xl border border-dashed border-gray-200 p-3 text-center text-xs text-slate-500">
+                    <p className="rounded-xl border border-dashed border-gray-200 p-4 text-center text-xs text-slate-500">
                       {bay.isAvailable
-                        ? "Ready to accept incoming vehicle."
-                        : "Bay manually locked / occupied."}
-                    </div>
+                        ? "Ready for the next vehicle."
+                        : "Bay manually locked."}
+                    </p>
                   )}
                 </div>
 
-                <div className="mt-4 border-t border-gray-100 pt-3">
-                  <button
-                    type="button"
-                    disabled={togglingId === bay._id}
-                    onClick={() => handleToggleBayStatus(bay)}
-                    className={`w-full rounded-xl px-3.5 py-2 text-xs font-semibold transition disabled:opacity-50 ${
-                      bay.isAvailable
-                        ? "border border-gray-300 bg-slate-50 text-[#13294b] hover:bg-slate-100"
-                        : "bg-emerald-700 text-white hover:bg-emerald-800"
-                    }`}
-                  >
-                    {togglingId === bay._id
-                      ? "Updating..."
-                      : bay.isAvailable
-                        ? "Mark as Occupied"
-                        : "Release Bay (Mark Available)"}
-                  </button>
+                <div className="mt-3 border-t border-gray-100 pt-3">
+                  {inService ? (
+                    <button
+                      type="button"
+                      onClick={() => openJobSheet(bay)}
+                      className="w-full rounded-lg bg-[#13294b] px-3 py-2 text-xs font-semibold text-white transition hover:bg-[#1a3660]"
+                    >
+                      Job Sheet &amp; Stage
+                    </button>
+                  ) : (
+                    <button
+                      type="button"
+                      disabled={togglingId === bay._id}
+                      onClick={() => handleToggleBayStatus(bay)}
+                      className="w-full rounded-lg border border-gray-300 bg-slate-50 px-3 py-2 text-xs font-semibold text-[#13294b] transition hover:bg-slate-100 disabled:opacity-50"
+                    >
+                      {togglingId === bay._id
+                        ? "Updating..."
+                        : bay.isAvailable
+                          ? "Mark as Occupied"
+                          : "Release Bay"}
+                    </button>
+                  )}
                 </div>
               </div>
             );
           })}
         </div>
       )}
+
+      {/* Job Sheet Modal */}
+      {sheetBayId && (() => {
+        const selectedBay = bays.find((b) => b._id === sheetBayId);
+        const vSnap = selectedBay?.currentServiceId?.vehicleSnapshot;
+        const allowedNextStages =
+          ALLOWED_STAGE_TRANSITIONS[sheetOriginalStage] || [];
+
+        return (
+          <div
+            className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4"
+            onClick={() => !savingSheet && setSheetBayId(null)}
+          >
+            <form
+              onSubmit={handleSaveJobSheet}
+              onClick={(e) => e.stopPropagation()}
+              className="w-full max-w-lg space-y-4 rounded-2xl bg-white p-5 shadow-xl sm:p-6"
+            >
+              <div className="flex items-start justify-between gap-2 border-b border-gray-100 pb-3">
+                <div>
+                  <h2 className="text-base font-bold text-[#13294b]">
+                    Job Sheet &amp; Service Stage
+                  </h2>
+                  <p className="text-xs text-slate-500">
+                    {selectedBay?.bayName} ({selectedBay?.bayType}) ·{" "}
+                    {vSnap?.brand} {vSnap?.modelName}
+                  </p>
+                </div>
+                {vSnap?.registrationNo && (
+                  <span className="rounded border-2 border-black bg-yellow-400 px-2.5 py-0.5 text-xs font-black tracking-widest text-black uppercase">
+                    {vSnap.registrationNo}
+                  </span>
+                )}
+              </div>
+
+              {/* Unidirectional Forward Stepper Progress */}
+              <div className="rounded-xl border border-slate-200 bg-slate-50 p-3">
+                <div className="mb-2 flex items-center justify-between">
+                  <span className="text-[11px] font-bold tracking-wider text-slate-500 uppercase">
+                    Stage Progression (Forward Only)
+                  </span>
+                  <span className="text-[10px] font-medium text-slate-400">
+                    Cannot revert to passed stages
+                  </span>
+                </div>
+                <div className="flex flex-wrap items-center gap-1.5 text-xs">
+                  {SERVICE_STAGES.map((st, idx) => {
+                    const isCurr = st === sheetOriginalStage;
+                    const isPast =
+                      !isCurr &&
+                      !allowedNextStages.includes(st) &&
+                      sheetOriginalStage !== "Vehicle Received";
+                    const isTarget = st === sheetStage && !isCurr;
+
+                    let badgeClasses =
+                      "border border-slate-200 bg-white text-slate-400";
+                    if (isPast) {
+                      badgeClasses =
+                        "bg-emerald-50 text-emerald-700 border-emerald-300 font-medium";
+                    } else if (isCurr) {
+                      badgeClasses =
+                        "bg-[#13294b] text-white font-bold shadow-xs";
+                    } else if (isTarget) {
+                      badgeClasses =
+                        "bg-orange-600 text-white font-bold ring-2 ring-orange-200";
+                    }
+
+                    return (
+                      <div key={st} className="flex items-center gap-1.5">
+                        <span
+                          className={`inline-flex items-center gap-1 rounded-md px-2 py-1 text-[11px] ${badgeClasses}`}
+                        >
+                          {isPast && <span className="font-bold">✓</span>}
+                          {isCurr && <span>●</span>}
+                          {isTarget && <span>➔</span>}
+                          {st}
+                        </span>
+                        {idx < SERVICE_STAGES.length - 1 && (
+                          <span className="text-slate-300">›</span>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+
+              <div>
+                <label
+                  htmlFor="sheetStage"
+                  className="mb-1 block text-xs font-semibold text-slate-600"
+                >
+                  Change Service Stage
+                </label>
+                <select
+                  id="sheetStage"
+                  value={sheetStage}
+                  disabled={sheetOriginalStage === "Completed"}
+                  onChange={(e) => {
+                    const nextVal = e.target.value;
+                    setSheetStage(nextVal);
+                    if (nextVal === "Waiting for Approval") {
+                      setSheetAdditional(true);
+                    }
+                  }}
+                  className="w-full rounded-lg border border-gray-300 bg-white px-3 py-2 text-xs text-gray-900 outline-none focus:border-orange-700 disabled:bg-slate-100 disabled:text-slate-400"
+                >
+                  {SERVICE_STAGES.map((stage) => {
+                    const isCurrent = stage === sheetOriginalStage;
+                    const isAllowed =
+                      isCurrent || allowedNextStages.includes(stage);
+                    return (
+                      <option key={stage} value={stage} disabled={!isAllowed}>
+                        {stage}{" "}
+                        {isCurrent
+                          ? "(Current Stage)"
+                          : !isAllowed
+                            ? "— 🔒 Passed (Locked)"
+                            : "➔ Next Available"}
+                      </option>
+                    );
+                  })}
+                </select>
+                {sheetStage === "Completed" && (
+                  <p className="mt-1.5 rounded bg-amber-50 p-2 text-[11px] font-semibold text-amber-800">
+                    ⚠ Completing the job will mark service finished and release this bay.
+                  </p>
+                )}
+                {sheetStage === "Waiting for Approval" && (
+                  <p className="mt-1.5 rounded bg-blue-50 p-2 text-[11px] font-medium text-blue-800">
+                    ℹ Vehicle placed on hold for customer/admin additional repair approval.
+                  </p>
+                )}
+              </div>
+
+              <div>
+                <label
+                  htmlFor="sheetNotes"
+                  className="mb-1 block text-xs font-semibold text-slate-600"
+                >
+                  Inspection &amp; Work Notes
+                </label>
+                <textarea
+                  id="sheetNotes"
+                  rows={4}
+                  maxLength={2000}
+                  value={sheetNotes}
+                  onChange={(e) => setSheetNotes(e.target.value)}
+                  placeholder="Record findings, worn parts, or repairs performed..."
+                  className="w-full rounded-lg border border-gray-300 bg-white px-3 py-2 text-xs text-gray-900 outline-none focus:border-orange-700"
+                />
+              </div>
+
+              <label className="flex cursor-pointer items-center gap-2 rounded-lg border border-gray-200 bg-slate-50 p-2.5 text-xs font-medium text-slate-700 hover:bg-slate-100">
+                <input
+                  type="checkbox"
+                  checked={sheetAdditional}
+                  onChange={(e) => setSheetAdditional(e.target.checked)}
+                  className="h-4 w-4 rounded text-orange-600"
+                />
+                <span>
+                  <strong>Additional work required</strong> (mark if extra repairs or parts outside initial package are needed)
+                </span>
+              </label>
+
+              <div className="flex justify-end gap-2 border-t border-gray-100 pt-3">
+                <button
+                  type="button"
+                  disabled={savingSheet}
+                  onClick={() => setSheetBayId(null)}
+                  className="rounded-lg border border-gray-300 px-3.5 py-2 text-xs font-semibold text-slate-600 hover:bg-slate-50"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  disabled={savingSheet}
+                  className="rounded-lg bg-orange-700 px-4 py-2 text-xs font-semibold text-white hover:bg-orange-800 disabled:opacity-50"
+                >
+                  {savingSheet ? "Saving..." : "Save Job Sheet"}
+                </button>
+              </div>
+            </form>
+          </div>
+        );
+      })()}
     </div>
   );
 }
 
 export default ServiceBayManagement;
-

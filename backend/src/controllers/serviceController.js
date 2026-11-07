@@ -95,7 +95,7 @@ exports.startService = async (req, res, next) => {
           vehicleSnapshot: appointment.vehicleSnapshot,
           mechanicId: mechanic._id,
           bayId: bay._id,
-          status: "Vehicle Received",
+          status: "Inspection",
         },
       ],
       { session },

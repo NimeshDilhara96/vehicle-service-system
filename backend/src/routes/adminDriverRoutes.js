@@ -16,17 +16,27 @@ const adminWriteLimiter = rateLimit({
   },
 });
 
-// Protect all routes with JWT verification from HttpOnly cookies and Admin role check
-router.use(protect, restrictTo("Admin"));
+// Protect all routes with JWT verification from HttpOnly cookies
+router.use(protect);
 
-router.get("/available", adminDriverController.getAvailableDrivers);
+// Driver & Admin shared endpoints: view own assigned tasks & update task status
+router.get(
+  "/my-tasks",
+  restrictTo("Driver", "Admin"),
+  adminDriverController.getMyAssignedTasks,
+);
 
-// Update a pickup/delivery task's status & log entry
 router.patch(
   "/tasks/:taskId/status",
+  restrictTo("Driver", "Admin"),
   adminWriteLimiter,
   adminDriverController.updatePickupTaskStatus,
 );
+
+// Admin-only routes below
+router.use(restrictTo("Admin"));
+
+router.get("/available", adminDriverController.getAvailableDrivers);
 
 router
   .route("/")
