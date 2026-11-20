@@ -29,7 +29,7 @@ const serviceSchema = new mongoose.Schema(
     mechanicId: {
       type: mongoose.Schema.Types.ObjectId,
       ref: "User",
-      required: true,
+      default: null,
       index: true,
     },
     bayId: {
@@ -59,6 +59,42 @@ const serviceSchema = new mongoose.Schema(
     additionalWorkRequired: {
       type: Boolean,
       default: false,
+    },
+    additionalWorks: {
+      type: [
+        {
+          title: { type: String, required: true, trim: true, maxlength: 120 },
+          description: { type: String, trim: true, maxlength: 500, default: "" },
+          category: {
+            type: String,
+            enum: ["Repair", "Spare Part", "Fluid / Oil", "Other"],
+            default: "Repair",
+          },
+          estimatedCost: { type: Number, required: true, min: 0 },
+          status: {
+            type: String,
+            enum: ["Pending Approval", "Approved", "Rejected"],
+            default: "Pending Approval",
+          },
+          addedBy: { type: mongoose.Schema.Types.ObjectId, ref: "User" },
+          addedByName: { type: String, trim: true, default: "" },
+          addedAt: { type: Date, default: Date.now },
+          respondedAt: { type: Date, default: null },
+        },
+      ],
+      default: [],
+    },
+    statusLogs: {
+      type: [
+        {
+          stage: { type: String, required: true },
+          note: { type: String, trim: true, maxlength: 500, default: "" },
+          updatedBy: { type: mongoose.Schema.Types.ObjectId, ref: "User" },
+          updatedByName: { type: String, trim: true, default: "" },
+          updatedAt: { type: Date, default: Date.now },
+        },
+      ],
+      default: [],
     },
   },
   {

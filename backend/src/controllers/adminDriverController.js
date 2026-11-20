@@ -4,6 +4,8 @@ const User = require("../models/User");
 const PickupDelivery = require("../models/PickupDelivery");
 const Appointment = require("../models/Appointment");
 const Service = require("../models/Service");
+const ServiceBay = require("../models/ServiceBay");
+const Invoice = require("../models/Invoice");
 const {
   createDriverSchema,
   updateDriverSchema,
@@ -826,17 +828,104 @@ exports.updatePickupTaskStatus = async (req, res, next) => {
 
     // When vehicle is Delivered to Customer, mark Appointment as Completed
     const appId = populated.appointmentId?._id || populated.appointmentId;
+    let autoAllocatedBayName = null;
+
     if (pickupStatus === "Delivered to Customer" && appId) {
       await Appointment.findByIdAndUpdate(appId, { status: "Completed" });
+    } else if (pickupStatus === "Delivered to Workshop" && appId) {
+      // Auto-allocate the first available Service Bay atomically inside a transaction
+      const bayCount = await ServiceBay.countDocuments({});
+      if (bayCount === 0) {
+        await ServiceBay.insertMany([
+          { bayName: "Bay 1", bayType: "Mechanical", isAvailable: true },
+          { bayName: "Bay 2", bayType: "General", isAvailable: true },
+          { bayName: "Bay 3", bayType: "Washing", isAvailable: true },
+        ]).catch(() => {});
+      }
+
+      const baySession = await mongoose.startSession();
+      baySession.startTransaction();
+      try {
+        const existingSrv = await Service.findOne({ appointmentId: appId })
+          .select("_id")
+          .session(baySession)
+          .lean();
+
+        const appointmentDoc = await Appointment.findById(appId)
+          .select("customerId vehicleId vehicleSnapshot status")
+          .session(baySession);
+
+        if (
+          !existingSrv &&
+          appointmentDoc &&
+          appointmentDoc.status !== "Completed" &&
+          appointmentDoc.status !== "Cancelled"
+        ) {
+          const claimedBay = await ServiceBay.findOneAndUpdate(
+            { isAvailable: true },
+            { $set: { isAvailable: false } },
+            { sort: { bayName: 1 }, returnDocument: "after", session: baySession },
+          );
+
+          if (claimedBay) {
+            const [createdSrv] = await Service.create(
+              [
+                {
+                  appointmentId: appointmentDoc._id,
+                  customerId: appointmentDoc.customerId,
+                  vehicleId: appointmentDoc.vehicleId,
+                  vehicleSnapshot: appointmentDoc.vehicleSnapshot,
+                  bayId: claimedBay._id,
+                  status: "Inspection",
+                  statusLogs: [
+                    {
+                      stage: "Inspection",
+                      note: `Auto-allocated to ${claimedBay.bayName} upon workshop delivery`,
+                      updatedBy: req.user?._id,
+                      updatedByName: req.user?.name || req.user?.role || "Driver",
+                      updatedAt: new Date(),
+                    },
+                  ],
+                },
+              ],
+              { session: baySession },
+            );
+
+            claimedBay.currentServiceId = createdSrv._id;
+            await claimedBay.save({ session: baySession });
+
+            appointmentDoc.status = "In Progress";
+            await appointmentDoc.save({ session: baySession });
+
+            await Invoice.findOneAndUpdate(
+              { appointmentId: appointmentDoc._id },
+              { $set: { serviceId: createdSrv._id } },
+              { returnDocument: "after", session: baySession },
+            );
+
+            autoAllocatedBayName = claimedBay.bayName;
+          }
+        }
+
+        await baySession.commitTransaction();
+      } catch (bayErr) {
+        await baySession.abortTransaction();
+        throw bayErr;
+      } finally {
+        baySession.endSession();
+      }
     }
 
     res.status(200).json({
       success: true,
       message:
         pickupStatus === "Delivered to Workshop"
-          ? "Vehicle delivered to workshop!"
+          ? autoAllocatedBayName
+            ? `Vehicle delivered to workshop and automatically allocated to ${autoAllocatedBayName} (Inspection)!`
+            : "Vehicle delivered to workshop! All bays are currently full — queued for bay assignment."
           : `Task status updated to ${pickupStatus}.`,
       task: populated,
+      allocatedBay: autoAllocatedBayName,
     });
   } catch (error) {
     next(error);

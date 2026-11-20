@@ -36,5 +36,26 @@ router.patch(
   serviceBayController.updateJobSheet,
 );
 
+router.post(
+  "/:id/additional-work",
+  restrictTo("Admin", "Mechanic"),
+  bayWriteLimiter,
+  serviceBayController.addAdditionalWorkItem,
+);
+
+router.delete(
+  "/:id/additional-work/:itemId",
+  restrictTo("Admin", "Mechanic"),
+  bayWriteLimiter,
+  serviceBayController.removeAdditionalWorkItem,
+);
+
+router.patch(
+  "/customer/services/:serviceId/additional-work/:itemId",
+  restrictTo("Customer"),
+  bayWriteLimiter,
+  serviceBayController.respondToAdditionalWork,
+);
+
 module.exports = router;
 

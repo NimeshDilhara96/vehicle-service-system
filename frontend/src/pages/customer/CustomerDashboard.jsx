@@ -3,6 +3,7 @@ import { useNavigate } from "react-router-dom";
 import { SmartMap } from "../../components/map/SmartMap";
 import { useAuth } from "../../context/AuthContext";
 import api from "../../services/api";
+import Alert from "../../components/ui/Alert";
 import Vehicle from "./Vehicle";
 import Booking from "./Booking";
 import Profile from "./Profile";
@@ -97,37 +98,94 @@ function CustomerDashboard() {
   const [apiMessage, setApiMessage] = useState("");
   const [routeCoords, setRouteCoords] = useState(null);
   const [resetCount, setResetCount] = useState(0);
+  const [refreshCount, setRefreshCount] = useState(0);
+  const [respondingItemId, setRespondingItemId] = useState(null);
+  const [approvalFeedback, setApprovalFeedback] = useState({
+    type: "",
+    text: "",
+  });
   const { user, logout } = useAuth();
   const navigate = useNavigate();
 
   useEffect(() => {
+    let isMounted = true;
+    const controller = new AbortController();
+
     api
-      .get("/auth/user-dashboard")
+      .get("/auth/user-dashboard", { signal: controller.signal })
       .then((res) => {
-        if (res.data.success) {
+        if (isMounted && res.data.success) {
           setApiMessage(res.data.message);
         }
       })
-      .catch(() => setApiMessage("Error fetching user dashboard"));
+      .catch(() => {
+        if (isMounted) setApiMessage("Error fetching user dashboard");
+      });
 
     api
-      .get("/vehicles")
+      .get("/vehicles", { signal: controller.signal })
       .then((res) => {
-        if (res.data.success) {
+        if (isMounted && res.data.success) {
           setVehicles(res.data.vehicles || []);
         }
       })
       .catch(() => {});
 
     api
-      .get("/appointments")
+      .get("/appointments", { signal: controller.signal })
       .then((res) => {
-        if (res.data.success) {
+        if (isMounted && res.data.success) {
           setBookings(res.data.appointments || []);
         }
       })
       .catch(() => {});
-  }, []);
+
+    return () => {
+      isMounted = false;
+      controller.abort();
+    };
+  }, [refreshCount]);
+
+  const handleRespondAdditionalWork = async (serviceId, itemId, decision) => {
+    setRespondingItemId(itemId);
+    setApprovalFeedback({ type: "", text: "" });
+
+    try {
+      const res = await api.patch(
+        `/service-bays/customer/services/${serviceId}/additional-work/${itemId}`,
+        { decision },
+      );
+
+      if (res.data.success) {
+        setBookings((prev) =>
+          prev.map((b) =>
+            b.service?._id === serviceId
+              ? {
+                  ...b,
+                  service: res.data.service || b.service,
+                  invoice: res.data.invoice || b.invoice,
+                }
+              : b,
+          ),
+        );
+        setApprovalFeedback({
+          type: "success",
+          text:
+            res.data.message ||
+            `Additional work item ${decision.toLowerCase()}.`,
+        });
+      }
+    } catch (err) {
+      setApprovalFeedback({
+        type: "error",
+        text:
+          err.response?.data?.message ||
+          "Failed to submit your approval decision.",
+      });
+    } finally {
+      setRespondingItemId(null);
+    }
+  };
 
   const handleLogout = async () => {
     await logout();
@@ -270,6 +328,13 @@ function CustomerDashboard() {
                 <div className="flex items-center gap-2.5">
                   <button
                     type="button"
+                    onClick={() => setRefreshCount((c) => c + 1)}
+                    className="rounded-lg border border-gray-300 bg-white px-3.5 py-2.5 text-xs font-semibold text-[#13294b] transition hover:bg-slate-50"
+                  >
+                    ↻ Refresh
+                  </button>
+                  <button
+                    type="button"
                     onClick={() => setActiveTab("My Vehicles")}
                     className="rounded-lg border border-[#13294b] bg-white px-4 py-2.5 text-xs font-semibold text-[#13294b] transition hover:bg-slate-50"
                   >
@@ -284,6 +349,14 @@ function CustomerDashboard() {
                   </button>
                 </div>
               </div>
+
+              {approvalFeedback.text && (
+                <Alert
+                  type={approvalFeedback.type || "success"}
+                  message={approvalFeedback.text}
+                  onClose={() => setApprovalFeedback({ type: "", text: "" })}
+                />
+              )}
 
               {/* Vehicle Progress Card (Dynamically Updated from Customer Booking) */}
               <section className="rounded-2xl border border-gray-200 bg-white p-4 shadow-2xs sm:p-6">
@@ -323,8 +396,8 @@ function CustomerDashboard() {
                   </span>
                 </div>
 
-                {/* 6-Step Progress Bar */}
-                <div className="mt-4 grid grid-cols-6 gap-1.5 sm:gap-2">
+                {/* 5-Step Workshop Progress Bar */}
+                <div className="mt-4 grid grid-cols-5 gap-1.5 sm:gap-2">
                   {serviceSteps.map((step) => {
                     const barColor =
                       step.status === "done"
@@ -356,10 +429,180 @@ function CustomerDashboard() {
 
                 <p className="mt-2.5 text-xs text-slate-500 lg:hidden">
                   {activeBooking && currentStepIndex >= 0
-                    ? `Step ${currentStepIndex + 1} of 6 · ${STEP_LABELS[currentStepIndex]}`
-                    : "Step 0 of 6 · Awaiting Booking"}
+                    ? `Step ${currentStepIndex + 1} of ${STEP_LABELS.length} · ${STEP_LABELS[currentStepIndex]}`
+                    : `Step 0 of ${STEP_LABELS.length} · Awaiting Booking`}
                 </p>
               </section>
+
+              {/* Workshop Inspection & Live Additional Work Approval Card */}
+              {activeBooking?.service &&
+                ((activeBooking.service.additionalWorks || []).length > 0 ||
+                  activeBooking.service.inspectionNotes) &&
+                (() => {
+                  const srv = activeBooking.service;
+                  const inv = activeBooking.invoice || {};
+                  const works = Array.isArray(srv.additionalWorks)
+                    ? srv.additionalWorks
+                    : [];
+                  const pendingWorks = works.filter(
+                    (w) => w.status === "Pending Approval",
+                  );
+
+                  return (
+                    <section
+                      className={`rounded-2xl border p-4 shadow-2xs sm:p-6 ${
+                        pendingWorks.length > 0
+                          ? "border-amber-300 bg-amber-50/40"
+                          : "border-gray-200 bg-white"
+                      }`}
+                    >
+                      <div className="flex flex-wrap items-start justify-between gap-2">
+                        <div>
+                          <h3 className="text-sm font-bold text-[#13294b] sm:text-base">
+                            Workshop Inspection &amp; Additional Repairs
+                          </h3>
+                          <p className="mt-0.5 text-xs text-slate-500">
+                            Review any extra issues or spare parts reported by
+                            our technicians and approve or reject each item.
+                          </p>
+                        </div>
+                        {pendingWorks.length > 0 && (
+                          <span className="inline-flex items-center gap-1.5 rounded-full bg-amber-100 px-3 py-1 text-xs font-bold text-amber-900">
+                            <span className="h-2 w-2 animate-pulse rounded-full bg-amber-600" />
+                            Action Required ({pendingWorks.length})
+                          </span>
+                        )}
+                      </div>
+
+                      {srv.inspectionNotes && (
+                        <div className="mt-3 rounded-xl border border-slate-200 bg-white p-3 text-xs text-slate-700">
+                          <span className="font-bold text-[#13294b]">
+                            Technician Notes:{" "}
+                          </span>
+                          {srv.inspectionNotes}
+                        </div>
+                      )}
+
+                      {works.length > 0 && (
+                        <div className="mt-3.5 space-y-2.5">
+                          {works.map((item) => {
+                            const isPending =
+                              item.status === "Pending Approval";
+                            const isBusy = respondingItemId === item._id;
+
+                            return (
+                              <div
+                                key={item._id}
+                                className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-gray-200 bg-white p-3.5"
+                              >
+                                <div className="min-w-0 flex-1">
+                                  <div className="flex flex-wrap items-center gap-2">
+                                    <span className="text-xs font-bold text-[#13294b] sm:text-sm">
+                                      {item.title}
+                                    </span>
+                                    <span className="rounded bg-slate-100 px-1.5 py-0.5 text-[10px] font-semibold text-slate-600">
+                                      {item.category || "Repair"}
+                                    </span>
+                                    {!isPending && (
+                                      <span
+                                        className={`rounded-full px-2 py-0.5 text-[10px] font-bold ${
+                                          item.status === "Approved"
+                                            ? "bg-emerald-100 text-emerald-800"
+                                            : "bg-red-100 text-red-700"
+                                        }`}
+                                      >
+                                        {item.status === "Approved"
+                                          ? "✓ Approved"
+                                          : "✕ Rejected"}
+                                      </span>
+                                    )}
+                                  </div>
+                                  {item.description && (
+                                    <p className="mt-1 text-xs text-slate-500">
+                                      {item.description}
+                                    </p>
+                                  )}
+                                </div>
+
+                                <div className="flex flex-wrap items-center gap-3">
+                                  <span className="text-sm font-extrabold text-[#13294b]">
+                                    Rs.{" "}
+                                    {Number(
+                                      item.estimatedCost || 0,
+                                    ).toLocaleString()}
+                                  </span>
+
+                                  {isPending && (
+                                    <div className="flex items-center gap-2">
+                                      <button
+                                        type="button"
+                                        disabled={isBusy}
+                                        onClick={() =>
+                                          handleRespondAdditionalWork(
+                                            srv._id,
+                                            item._id,
+                                            "Approved",
+                                          )
+                                        }
+                                        className="rounded-lg bg-emerald-700 px-3 py-1.5 text-xs font-bold text-white transition hover:bg-emerald-800 disabled:opacity-50"
+                                      >
+                                        {isBusy ? "..." : "Approve ✓"}
+                                      </button>
+                                      <button
+                                        type="button"
+                                        disabled={isBusy}
+                                        onClick={() =>
+                                          handleRespondAdditionalWork(
+                                            srv._id,
+                                            item._id,
+                                            "Rejected",
+                                          )
+                                        }
+                                        className="rounded-lg border border-red-200 bg-white px-3 py-1.5 text-xs font-bold text-red-600 transition hover:bg-red-50 disabled:opacity-50"
+                                      >
+                                        Reject ✕
+                                      </button>
+                                    </div>
+                                  )}
+                                </div>
+                              </div>
+                            );
+                          })}
+                        </div>
+                      )}
+
+                      {/* Live Updated Estimate Breakdown */}
+                      {inv.totalAmount !== undefined && (
+                        <div className="mt-4 flex flex-wrap items-center justify-between gap-2 rounded-xl bg-[#13294b] px-4 py-3 text-xs text-white">
+                          <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-slate-300">
+                            <span>
+                              Package: Rs.{" "}
+                              {Number(inv.packageCharge || 0).toLocaleString()}
+                            </span>
+                            {Number(inv.pickupDeliveryCharge || 0) > 0 && (
+                              <span>
+                                Pickup: Rs.{" "}
+                                {Number(
+                                  inv.pickupDeliveryCharge || 0,
+                                ).toLocaleString()}
+                              </span>
+                            )}
+                            <span>
+                              Approved Extras: Rs.{" "}
+                              {Number(
+                                inv.additionalWorkCharge || 0,
+                              ).toLocaleString()}
+                            </span>
+                          </div>
+                          <span className="text-sm font-extrabold text-yellow-300">
+                            Updated Total: Rs.{" "}
+                            {Number(inv.totalAmount || 0).toLocaleString()}
+                          </span>
+                        </div>
+                      )}
+                    </section>
+                  );
+                })()}
 
               {/* Middle Section: Live Tracking Map + Your Driver */}
               <div className="grid grid-cols-1 gap-4 lg:grid-cols-3 lg:gap-5">

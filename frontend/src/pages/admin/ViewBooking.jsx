@@ -42,7 +42,6 @@ const PICKUP_STATUS_TO_STEP = {
   "Delivered to Customer": 6,
 };
 
-// Builds the status progress timeline shown below each booking box
 function getBookingProgress(app) {
   const isPickup = Boolean(app.requiresPickup);
   const steps = isPickup ? PICKUP_FLOW_STEPS : DROPOFF_FLOW_STEPS;
@@ -93,17 +92,15 @@ function ViewBooking({ onOpenDispatch, onOpenBayControl }) {
   const [error, setError] = useState("");
   const [successMsg, setSuccessMsg] = useState("");
 
-  // Assign Driver State for today's pickup bookings
-  const [assigningAppId, setAssigningAppId] = useState(null);
+  // Popup Modal State
+  const [selectedAppId, setSelectedAppId] = useState(null);
   const [selectedDriverId, setSelectedDriverId] = useState("");
-  const [isAssigning, setIsAssigning] = useState(false);
-
-  // Receive Vehicle & Select Bay State (once Delivered to Workshop or Drop-off arrives)
-  const [receivingAppId, setReceivingAppId] = useState(null);
   const [selectedBayId, setSelectedBayId] = useState("");
+  const [isAssigning, setIsAssigning] = useState(false);
   const [isReceiving, setIsReceiving] = useState(false);
-
-  const [cancellingId, setCancellingId] = useState(null);
+  const [isCancelling, setIsCancelling] = useState(false);
+  const [confirmCancel, setConfirmCancel] = useState(false);
+  const [modalFeedback, setModalFeedback] = useState({ type: "", text: "" });
 
   const todayStr = useMemo(() => new Date().toISOString().split("T")[0], []);
 
@@ -142,13 +139,32 @@ function ViewBooking({ onOpenDispatch, onOpenBayControl }) {
     };
   }, [refreshCount]);
 
-  // Quick inline driver assignment
+  const openBookingModal = (app) => {
+    setSelectedAppId(app._id);
+    setSelectedDriverId(availableDrivers[0]?._id || "");
+    setSelectedBayId(availableBays[0]?._id || "");
+    setConfirmCancel(false);
+    setModalFeedback({ type: "", text: "" });
+  };
+
+  const closeBookingModal = () => {
+    if (isAssigning || isReceiving || isCancelling) return;
+    setSelectedAppId(null);
+    setConfirmCancel(false);
+    setModalFeedback({ type: "", text: "" });
+  };
+
+  // Assign Driver inside Popup Modal
   const handleAssignDriver = async (appointmentId) => {
     if (!selectedDriverId) {
-      setError("Please select an available driver.");
+      setModalFeedback({
+        type: "error",
+        text: "Please select an available driver.",
+      });
       return;
     }
 
+    setModalFeedback({ type: "", text: "" });
     setError("");
     setSuccessMsg("");
     setIsAssigning(true);
@@ -160,25 +176,33 @@ function ViewBooking({ onOpenDispatch, onOpenBayControl }) {
       );
 
       if (res.data.success) {
-        setSuccessMsg(res.data.message || "Driver assigned successfully.");
-        setAssigningAppId(null);
+        const msg = res.data.message || "Driver assigned successfully.";
+        setModalFeedback({ type: "success", text: msg });
+        setSuccessMsg(msg);
         setSelectedDriverId("");
         setRefreshCount((prev) => prev + 1);
       }
     } catch (err) {
-      setError(err.response?.data?.message || "Failed to assign driver.");
+      setModalFeedback({
+        type: "error",
+        text: err.response?.data?.message || "Failed to assign driver.",
+      });
     } finally {
       setIsAssigning(false);
     }
   };
 
-  // Mark Vehicle Received & Assign Selected Service Bay (after Delivered to Workshop or Drop-off)
+  // Mark Vehicle Received & Allocate Selected Service Bay inside Popup Modal
   const handleReceiveAndAssignBay = async (appointmentId) => {
     if (!selectedBayId) {
-      setError("Please select an available Service Bay.");
+      setModalFeedback({
+        type: "error",
+        text: "Please select an available Service Bay.",
+      });
       return;
     }
 
+    setModalFeedback({ type: "", text: "" });
     setError("");
     setSuccessMsg("");
     setIsReceiving(true);
@@ -193,30 +217,31 @@ function ViewBooking({ onOpenDispatch, onOpenBayControl }) {
       );
 
       if (res.data.success) {
-        setSuccessMsg(
-          "Vehicle marked as Received and assigned to the selected Service Bay!",
-        );
-        setReceivingAppId(null);
+        const msg =
+          "Vehicle marked as Received and allocated to the selected Service Bay!";
+        setModalFeedback({ type: "success", text: msg });
+        setSuccessMsg(msg);
         setSelectedBayId("");
         setRefreshCount((prev) => prev + 1);
       }
     } catch (err) {
-      setError(
-        err.response?.data?.message ||
+      setModalFeedback({
+        type: "error",
+        text:
+          err.response?.data?.message ||
           "Failed to mark vehicle as received in service bay.",
-      );
+      });
     } finally {
       setIsReceiving(false);
     }
   };
 
-  // Cancel booking
+  // Cancel booking inside Popup Modal (with inline confirmation)
   const handleCancelBooking = async (appointmentId) => {
-    if (!window.confirm("Are you sure you want to cancel this booking?")) return;
-
+    setModalFeedback({ type: "", text: "" });
     setError("");
     setSuccessMsg("");
-    setCancellingId(appointmentId);
+    setIsCancelling(true);
 
     try {
       const res = await api.patch(
@@ -230,12 +255,20 @@ function ViewBooking({ onOpenDispatch, onOpenBayControl }) {
             app._id === appointmentId ? { ...app, status: "Cancelled" } : app,
           ),
         );
+        setConfirmCancel(false);
         setSuccessMsg("Booking cancelled successfully.");
+        setModalFeedback({
+          type: "success",
+          text: "Booking cancelled successfully.",
+        });
       }
     } catch (err) {
-      setError(err.response?.data?.message || "Failed to cancel booking.");
+      setModalFeedback({
+        type: "error",
+        text: err.response?.data?.message || "Failed to cancel booking.",
+      });
     } finally {
-      setCancellingId(null);
+      setIsCancelling(false);
     }
   };
 
@@ -251,7 +284,6 @@ function ViewBooking({ onOpenDispatch, onOpenBayControl }) {
     for (const app of appointments) {
       const appDateStr = formatIsoDate(app.serviceDate);
 
-      // Check if it's today
       const isToday =
         appDateStr === todayStr ||
         (app.status === "In Progress" && app.status !== "Completed");
@@ -279,7 +311,6 @@ function ViewBooking({ onOpenDispatch, onOpenBayControl }) {
       }
     }
 
-    // Sort upcoming by serviceDate ascending (earliest first)
     upcomingList.sort(
       (a, b) => new Date(a.serviceDate || 0) - new Date(b.serviceDate || 0),
     );
@@ -309,7 +340,8 @@ function ViewBooking({ onOpenDispatch, onOpenBayControl }) {
 
     return list.filter((app) => {
       const reg = (app.vehicleSnapshot?.registrationNo || "").toLowerCase();
-      const brand = `${app.vehicleSnapshot?.brand || ""} ${app.vehicleSnapshot?.modelName || ""}`.toLowerCase();
+      const brand =
+        `${app.vehicleSnapshot?.brand || ""} ${app.vehicleSnapshot?.modelName || ""}`.toLowerCase();
       const customer = (app.customerId?.name || "").toLowerCase();
       const phone = (app.customerId?.contactNo || "").toLowerCase();
       const pkg = (app.packageId?.packageName || "").toLowerCase();
@@ -323,16 +355,22 @@ function ViewBooking({ onOpenDispatch, onOpenBayControl }) {
     });
   }, [categorized, activeSubTab, search]);
 
+  const activeApp = useMemo(
+    () => appointments.find((a) => a._id === selectedAppId) || null,
+    [appointments, selectedAppId],
+  );
+
   return (
-    <div className="space-y-4">
+    <div className="space-y-5">
       {/* Top Header & Search */}
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div>
           <h1 className="text-xl font-bold tracking-tight text-[#13294b] lg:text-2xl">
-            Booking &amp; Schedule Operations
+            Appointments &amp; Bookings
           </h1>
-          <p className="mt-0.5 text-xs text-slate-500">
-            Monitor today&apos;s active service schedule, dispatch drivers, and plan upcoming bookings.
+          <p className="mt-0.5 text-sm text-slate-500">
+            Click any appointment row to inspect full details, assign drivers,
+            or receive vehicles into a service bay.
           </p>
         </div>
 
@@ -342,118 +380,110 @@ function ViewBooking({ onOpenDispatch, onOpenBayControl }) {
             value={search}
             onChange={(e) => setSearch(e.target.value)}
             placeholder="Search plate, customer, phone..."
-            className="w-48 sm:w-64 rounded-lg border border-gray-300 bg-white px-3 py-1.5 text-xs text-gray-900 outline-none transition focus:border-orange-700"
+            className="w-48 rounded-lg border border-gray-300 bg-white px-3 py-2 text-xs text-gray-900 outline-none transition focus:border-orange-700 sm:w-64"
           />
           <button
             type="button"
             onClick={() => setRefreshCount((c) => c + 1)}
-            className="rounded-lg bg-[#13294b] px-3 py-1.5 text-xs font-semibold text-white transition hover:bg-[#1a3660]"
+            className="rounded-lg border border-gray-300 bg-white px-3.5 py-2 text-xs font-semibold text-[#13294b] transition hover:bg-slate-50"
           >
-            Refresh
+            ↻ Refresh
           </button>
         </div>
       </div>
 
-      <Alert type="error">{error}</Alert>
-      <Alert type="success">{successMsg}</Alert>
+      {error && (
+        <Alert type="error" message={error} onClose={() => setError("")} />
+      )}
+      {successMsg && (
+        <Alert
+          type="success"
+          message={successMsg}
+          onClose={() => setSuccessMsg("")}
+        />
+      )}
 
       {/* Main Operational Tabs */}
       <div className="flex border-b border-gray-200">
-        <button
-          type="button"
-          onClick={() => setActiveSubTab("today")}
-          className={`flex items-center gap-2 border-b-2 px-4 py-2.5 text-xs font-bold transition ${
-            activeSubTab === "today"
-              ? "border-orange-700 text-orange-700"
-              : "border-transparent text-slate-500 hover:text-slate-800"
-          }`}
-        >
-          <span>Today&apos;s Schedule</span>
-          <span
-            className={`rounded-full px-2 py-0.5 text-[10px] font-extrabold ${
-              activeSubTab === "today"
-                ? "bg-orange-100 text-orange-800"
-                : "bg-slate-100 text-slate-600"
-            }`}
-          >
-            {categorized.today.length}
-          </span>
-        </button>
-
-        <button
-          type="button"
-          onClick={() => setActiveSubTab("upcoming")}
-          className={`flex items-center gap-2 border-b-2 px-4 py-2.5 text-xs font-bold transition ${
-            activeSubTab === "upcoming"
-              ? "border-orange-700 text-orange-700"
-              : "border-transparent text-slate-500 hover:text-slate-800"
-          }`}
-        >
-          <span>Upcoming Bookings</span>
-          <span
-            className={`rounded-full px-2 py-0.5 text-[10px] font-extrabold ${
-              activeSubTab === "upcoming"
-                ? "bg-orange-100 text-orange-800"
-                : "bg-slate-100 text-slate-600"
-            }`}
-          >
-            {categorized.upcoming.length}
-          </span>
-        </button>
-
-        <button
-          type="button"
-          onClick={() => setActiveSubTab("history")}
-          className={`flex items-center gap-2 border-b-2 px-4 py-2.5 text-xs font-bold transition ${
-            activeSubTab === "history"
-              ? "border-orange-700 text-orange-700"
-              : "border-transparent text-slate-500 hover:text-slate-800"
-          }`}
-        >
-          <span>History &amp; Completed</span>
-          <span
-            className={`rounded-full px-2 py-0.5 text-[10px] font-extrabold ${
-              activeSubTab === "history"
-                ? "bg-orange-100 text-orange-800"
-                : "bg-slate-100 text-slate-600"
-            }`}
-          >
-            {categorized.history.length}
-          </span>
-        </button>
+        {[
+          {
+            id: "today",
+            label: "Today's Schedule",
+            count: categorized.today.length,
+          },
+          {
+            id: "upcoming",
+            label: "Upcoming Bookings",
+            count: categorized.upcoming.length,
+          },
+          {
+            id: "history",
+            label: "History & Completed",
+            count: categorized.history.length,
+          },
+        ].map((tab) => {
+          const isActive = activeSubTab === tab.id;
+          return (
+            <button
+              key={tab.id}
+              type="button"
+              onClick={() => setActiveSubTab(tab.id)}
+              className={`flex items-center gap-2 border-b-2 px-4 py-2.5 text-xs font-bold transition ${
+                isActive
+                  ? "border-orange-700 text-orange-700"
+                  : "border-transparent text-slate-500 hover:text-slate-800"
+              }`}
+            >
+              <span>{tab.label}</span>
+              <span
+                className={`rounded-full px-2 py-0.5 text-[10px] font-extrabold ${
+                  isActive
+                    ? "bg-orange-100 text-orange-800"
+                    : "bg-slate-100 text-slate-600"
+                }`}
+              >
+                {tab.count}
+              </span>
+            </button>
+          );
+        })}
       </div>
 
-      {/* Today's Operational KPI Highlights (Shown on Today Tab) */}
+      {/* Today's Operational KPI Highlights */}
       {activeSubTab === "today" && (
-        <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
-          <div className="rounded-xl border border-gray-200 bg-white p-3.5 shadow-2xs">
-            <p className="text-[11px] font-medium text-slate-500">Today&apos;s Vehicles</p>
-            <p className="mt-1 text-xl font-extrabold text-[#13294b]">
+        <div className="grid grid-cols-3 gap-3 sm:gap-4">
+          <div className="rounded-2xl border border-gray-200 bg-white p-4 shadow-2xs">
+            <p className="text-xs font-medium text-slate-500">
+              Today&apos;s Vehicles
+            </p>
+            <p className="mt-1 text-2xl font-extrabold text-[#13294b]">
               {categorized.today.length}
             </p>
           </div>
-          <div className="rounded-xl border border-amber-200 bg-white p-3.5 shadow-2xs">
-            <p className="text-[11px] font-medium text-slate-500">Pickups Pending Driver</p>
-            <p className="mt-1 text-xl font-extrabold text-amber-700">
+          <div className="rounded-2xl border border-amber-200 bg-white p-4 shadow-2xs">
+            <p className="text-xs font-medium text-slate-500">
+              Pending Driver
+            </p>
+            <p className="mt-1 text-2xl font-extrabold text-amber-700">
               {categorized.todayPickupsPending}
             </p>
           </div>
-          <div className="rounded-xl border border-blue-200 bg-white p-3.5 shadow-2xs">
-            <p className="text-[11px] font-medium text-slate-500">In Workshop Service</p>
-            <p className="mt-1 text-xl font-extrabold text-blue-700">
+          <div className="rounded-2xl border border-blue-200 bg-white p-4 shadow-2xs">
+            <p className="text-xs font-medium text-slate-500">In Workshop</p>
+            <p className="mt-1 text-2xl font-extrabold text-blue-700">
               {categorized.todayInWorkshop}
             </p>
           </div>
         </div>
       )}
 
-      {/* Bookings List */}
+      {/* Clean Clickable Appointment Bars */}
       {loading ? (
-        <div className="rounded-2xl border border-gray-200 bg-white p-8 text-center text-xs text-slate-500 shadow-2xs">
-          Loading bookings...
+        <div className="rounded-2xl border border-gray-200 bg-white p-8 text-center text-sm text-slate-500 shadow-2xs">
+          Loading appointments...
         </div>
       ) : displayedList.length === 0 ? (
-        <div className="rounded-2xl border border-gray-200 bg-white p-8 text-center text-xs text-slate-500 shadow-2xs">
+        <div className="rounded-2xl border border-dashed border-gray-300 bg-white p-10 text-center text-sm text-slate-500 shadow-2xs">
           {activeSubTab === "today"
             ? "No bookings scheduled for today."
             : activeSubTab === "upcoming"
@@ -461,7 +491,7 @@ function ViewBooking({ onOpenDispatch, onOpenBayControl }) {
               : "No historical records found."}
         </div>
       ) : (
-        <div className="space-y-3">
+        <div className="space-y-2.5">
           {displayedList.map((app) => {
             const vSnap = app.vehicleSnapshot || {};
             const cust = app.customerId || {};
@@ -471,322 +501,663 @@ function ViewBooking({ onOpenDispatch, onOpenBayControl }) {
             const isToday = formatIsoDate(app.serviceDate) === todayStr;
             const progress = getBookingProgress(app);
 
+            const needsDriver =
+              app.requiresPickup &&
+              !assignedDriver &&
+              app.status !== "Cancelled" &&
+              app.status !== "Completed";
+
+            const readyForBay =
+              app.status === "Confirmed" &&
+              (!app.requiresPickup ||
+                pickup?.pickupStatus === "Delivered to Workshop");
+
+            const vehicleTitle =
+              [vSnap.brand, vSnap.modelName].filter(Boolean).join(" ") ||
+              vSnap.vehicleType ||
+              "Registered Vehicle";
+
+            let leftAccent = "border-l-slate-300";
+            if (app.status === "Cancelled") leftAccent = "border-l-red-400";
+            else if (app.status === "Completed")
+              leftAccent = "border-l-emerald-500";
+            else if (app.status === "In Progress")
+              leftAccent = "border-l-blue-600";
+            else if (readyForBay) leftAccent = "border-l-emerald-500";
+            else if (needsDriver) leftAccent = "border-l-amber-500";
+
             return (
               <div
                 key={app._id}
-                className="overflow-hidden rounded-2xl border border-gray-200 bg-white shadow-2xs transition hover:border-gray-300"
+                role="button"
+                tabIndex={0}
+                onClick={() => openBookingModal(app)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter" || e.key === " ") {
+                    e.preventDefault();
+                    openBookingModal(app);
+                  }
+                }}
+                className={`group cursor-pointer overflow-hidden rounded-xl border border-gray-200 border-l-4 ${leftAccent} bg-white shadow-2xs transition hover:border-orange-300 hover:shadow-sm focus:ring-2 focus:ring-orange-400 focus:outline-none`}
               >
-              <div className="flex flex-col justify-between gap-3 p-4 sm:flex-row sm:items-center">
-                {/* Left: Vehicle Plate, Customer, Schedule & Package */}
-                <div className="flex flex-1 flex-col gap-3 sm:flex-row sm:items-start">
-                  {/* Yellow Plate Badge */}
-                  <div className="shrink-0">
-                    <span className="inline-block rounded-md border-2 border-black bg-yellow-400 px-3 py-1 text-xs font-extrabold tracking-widest text-black uppercase shadow-2xs">
+                {/* Top Main Horizontal Bar */}
+                <div className="flex flex-col gap-3 px-4 py-3 transition group-hover:bg-orange-50/20 lg:flex-row lg:items-center lg:justify-between">
+                  {/* Left: Plate + Vehicle + Package & Customer */}
+                  <div className="flex min-w-0 flex-1 items-center gap-3.5">
+                    <span className="shrink-0 rounded border-2 border-black bg-yellow-400 px-2.5 py-1 text-xs font-extrabold tracking-widest text-black uppercase">
                       {vSnap.registrationNo || "Vehicle"}
                     </span>
-                    <span className="mt-1 block text-center text-[10px] font-medium text-slate-500">
-                      {vSnap.vehicleType || "Car"}
-                    </span>
+
+                    <div className="min-w-0 flex-1">
+                      <div className="flex flex-wrap items-center gap-2">
+                        <h3 className="truncate text-sm font-bold text-[#13294b] group-hover:text-orange-700">
+                          {vehicleTitle}
+                        </h3>
+                        <span className="hidden text-slate-300 sm:inline">
+                          ·
+                        </span>
+                        <span className="truncate text-xs font-medium text-slate-600">
+                          {pkg.packageName || "Service Package"}
+                        </span>
+                      </div>
+
+                      <div className="mt-0.5 flex flex-wrap items-center gap-x-2.5 gap-y-0.5 text-[11px] text-slate-500">
+                        <span className="font-semibold text-slate-700">
+                          {cust.name || "Customer"}
+                        </span>
+                        <span>·</span>
+                        <span className="font-semibold text-orange-700">
+                          {isToday ? "Today" : formatDisplayDate(app.serviceDate)}{" "}
+                          at {app.serviceTime}
+                        </span>
+                        <span
+                          className={`rounded px-1.5 py-0.5 text-[10px] font-semibold ${
+                            app.requiresPickup
+                              ? "bg-orange-50 text-orange-800"
+                              : "bg-slate-100 text-slate-600"
+                          }`}
+                        >
+                          {app.requiresPickup ? "Pickup" : "Drop-off"}
+                        </span>
+                      </div>
+                    </div>
                   </div>
 
-                  <div className="min-w-0 flex-1 space-y-1">
+                  {/* Right: Action Tag, Status Badge, Price & Open Cue */}
+                  <div className="flex flex-wrap items-center justify-between gap-3 border-t border-gray-100 pt-2 lg:shrink-0 lg:justify-end lg:border-t-0 lg:pt-0">
                     <div className="flex flex-wrap items-center gap-2">
-                      <h3 className="text-sm font-bold text-[#13294b]">
-                        {[vSnap.brand, vSnap.modelName].filter(Boolean).join(" ") ||
-                          "Registered Vehicle"}
-                      </h3>
+                      {needsDriver && (
+                        <span className="inline-flex shrink-0 items-center gap-1 rounded-full bg-amber-100 px-2.5 py-0.5 text-[10px] font-bold text-amber-900">
+                          <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-amber-600" />
+                          Assign Driver
+                        </span>
+                      )}
+                      {readyForBay && (
+                        <span className="inline-flex shrink-0 items-center gap-1 rounded-full bg-emerald-100 px-2.5 py-0.5 text-[10px] font-bold text-emerald-900">
+                          <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-emerald-600" />
+                          Select Bay
+                        </span>
+                      )}
+                      {app.status === "In Progress" && (
+                        <span className="shrink-0 rounded-full bg-blue-100 px-2.5 py-0.5 text-[10px] font-bold text-blue-900">
+                          {app.service?.status || "Inspection"} ·{" "}
+                          {app.service?.bayId?.bayName || "Bay"}
+                        </span>
+                      )}
 
                       <span
-                        className={`rounded-full border px-2 py-0.5 text-[10px] font-semibold ${
-                          STATUS_BADGE[app.status] || "bg-slate-100 text-slate-700"
+                        className={`rounded-full border px-2.5 py-0.5 text-[10px] font-bold ${
+                          STATUS_BADGE[app.status] ||
+                          "bg-slate-100 text-slate-700"
                         }`}
                       >
                         {app.status}
                       </span>
-
-                      {app.requiresPickup ? (
-                        <span className="rounded-full bg-orange-100 px-2 py-0.5 text-[10px] font-semibold text-orange-900">
-                          Pickup &amp; Delivery
-                        </span>
-                      ) : (
-                        <span className="rounded-full bg-slate-100 px-2 py-0.5 text-[10px] font-medium text-slate-600">
-                          Workshop Drop-off
-                        </span>
-                      )}
                     </div>
 
-                    {/* Schedule Date & Slot */}
-                    <p className="text-xs text-slate-600">
-                      <span className="font-semibold text-slate-800">
-                        {pkg.packageName || "Service Package"}
-                      </span>
-                      {" · "}
-                      <span className="text-orange-700 font-semibold">
-                        {isToday ? "Today" : formatDisplayDate(app.serviceDate)} at {app.serviceTime}
-                      </span>
-                    </p>
+                    <div className="flex items-center gap-3">
+                      <div className="text-right">
+                        <p className="text-xs font-extrabold text-[#13294b]">
+                          Rs.{" "}
+                          {(
+                            app.invoice?.totalAmount ||
+                            pkg.price ||
+                            0
+                          ).toLocaleString()}
+                        </p>
+                        <p className="text-[10px] text-slate-400">
+                          {app.invoice?.paymentStatus || "Unpaid"}
+                        </p>
+                      </div>
 
-                    {/* Customer & Contact Info */}
-                    <div className="flex flex-wrap items-center gap-3 text-xs text-slate-500">
-                      <span>
-                        Customer: <strong className="text-slate-700">{cust.name || "Customer"}</strong>
+                      <span className="text-sm font-bold text-slate-400 transition group-hover:translate-x-0.5 group-hover:text-orange-700">
+                        →
                       </span>
-                      {cust.contactNo && (
-                        <span>
-                          Tel:{" "}
-                          <a
-                            href={`tel:${cust.contactNo}`}
-                            className="font-semibold text-[#13294b] hover:underline"
-                          >
-                            {cust.contactNo}
-                          </a>
-                        </span>
-                      )}
                     </div>
-
-                    {/* Pickup Details & Driver Status */}
-                    {app.requiresPickup && (
-                      <div className="mt-1.5 flex flex-wrap items-center gap-2 text-xs">
-                        {app.pickupLocation?.address && (
-                          <span className="text-slate-500 truncate max-w-xs" title={app.pickupLocation.address}>
-                            📍 {app.pickupLocation.address}
-                          </span>
-                        )}
-
-                        <span
-                          className={`rounded-full border px-2 py-0.5 text-[10px] font-semibold ${
-                            PICKUP_BADGE[pickup?.pickupStatus] ||
-                            "bg-amber-50 text-amber-800 border-amber-200"
-                          }`}
-                        >
-                          {pickup?.pickupStatus || "Pending Assignment"}
-                        </span>
-
-                        {assignedDriver ? (
-                          <span className="font-medium text-slate-700">
-                            Driver: <strong>{assignedDriver.name}</strong> ({assignedDriver.contactNo})
-                          </span>
-                        ) : null}
-                      </div>
-                    )}
-
-                    {/* Workshop Service Indicator */}
-                    {app.status === "In Progress" && (
-                      <div className="mt-1.5 flex flex-wrap items-center gap-2">
-                        <span className="rounded-full bg-blue-100 px-2.5 py-0.5 text-[10px] font-bold text-blue-900">
-                          {app.service?.status || "Inspection"} ·{" "}
-                          {app.service?.bayId?.bayName || "In Service Bay"}
-                        </span>
-                        {onOpenBayControl && (
-                          <button
-                            type="button"
-                            onClick={onOpenBayControl}
-                            className="text-[11px] font-semibold text-orange-700 hover:underline"
-                          >
-                            View in Bay Control →
-                          </button>
-                        )}
-                      </div>
-                    )}
                   </div>
                 </div>
 
-                {/* Right: Price & Operational Actions */}
-                <div className="flex shrink-0 flex-col items-end justify-between gap-2.5 border-t border-gray-100 pt-2.5 sm:border-t-0 sm:pt-0">
-                  <div className="text-right">
-                    <p className="text-sm font-extrabold text-[#13294b]">
-                      Rs. {(app.invoice?.totalAmount || pkg.price || 0).toLocaleString()}
+                {/* Booking Progress Timeline Below the Bar */}
+                <div className="border-t border-gray-100 bg-slate-50/70 px-4 py-2.5">
+                  {progress.isCancelled ? (
+                    <p className="text-[11px] font-semibold text-red-600">
+                      ✕ This booking was cancelled
                     </p>
-                    <p className="text-[10px] text-slate-400">
-                      {app.invoice?.paymentStatus || "Unpaid"}
-                    </p>
-                  </div>
-
-                  {/* Actions for Today's Pickup & Workshop Receiving */}
-                  <div className="flex flex-wrap items-center justify-end gap-2">
-                    {app.requiresPickup &&
-                      !assignedDriver &&
-                      app.status !== "Cancelled" &&
-                      app.status !== "Completed" && (
-                        <>
-                          {assigningAppId === app._id ? (
-                            <div className="flex items-center gap-1.5">
-                              <select
-                                value={selectedDriverId}
-                                onChange={(e) => setSelectedDriverId(e.target.value)}
-                                className="rounded-lg border border-gray-300 bg-white px-2 py-1 text-xs text-gray-900 outline-none"
+                  ) : (
+                    <div className="flex items-start overflow-x-auto">
+                      {progress.steps.map((label, idx) => {
+                        const isDone = idx < progress.current;
+                        const isCurrent = idx === progress.current;
+                        const isLast = idx === progress.steps.length - 1;
+                        return (
+                          <div
+                            key={label}
+                            className={`flex items-start ${isLast ? "" : "flex-1"}`}
+                          >
+                            <div className="flex w-16 shrink-0 flex-col items-center text-center">
+                              <span
+                                className={`flex h-5 w-5 items-center justify-center rounded-full text-[10px] font-bold ${
+                                  isDone
+                                    ? "bg-emerald-600 text-white"
+                                    : isCurrent
+                                      ? "bg-orange-700 text-white ring-4 ring-orange-100"
+                                      : "bg-slate-200 text-slate-400"
+                                }`}
                               >
-                                <option value="">Select Driver</option>
-                                {availableDrivers.map((d) => (
-                                  <option key={d._id} value={d._id}>
-                                    {d.name} ({d.contactNo})
-                                  </option>
-                                ))}
-                              </select>
-                              <button
-                                type="button"
-                                disabled={isAssigning}
-                                onClick={() => handleAssignDriver(app._id)}
-                                className="rounded-lg bg-orange-700 px-2.5 py-1 text-xs font-semibold text-white transition hover:bg-orange-800 disabled:opacity-50"
+                                {isDone ? "✓" : idx + 1}
+                              </span>
+                              <span
+                                className={`mt-1 text-[10px] leading-tight ${
+                                  isCurrent
+                                    ? "font-bold text-orange-700"
+                                    : isDone
+                                      ? "font-medium text-emerald-700"
+                                      : "text-slate-400"
+                                }`}
                               >
-                                {isAssigning ? "..." : "Assign"}
-                              </button>
-                              <button
-                                type="button"
-                                onClick={() => setAssigningAppId(null)}
-                                className="text-xs text-slate-400 hover:text-slate-600"
-                              >
-                                ✕
-                              </button>
+                                {label}
+                              </span>
                             </div>
-                          ) : (
-                            <button
-                              type="button"
-                              onClick={() => {
-                                setAssigningAppId(app._id);
-                                setSelectedDriverId("");
-                              }}
-                              className="rounded-lg bg-[#13294b] px-3 py-1.5 text-xs font-semibold text-white transition hover:bg-[#1a3660]"
-                            >
-                              Assign Driver
-                            </button>
-                          )}
-                        </>
-                      )}
-
-                    {/* Once Delivered to Workshop (or Drop-off arrives), Admin marks Vehicle Received & selects Service Bay */}
-                    {app.status === "Confirmed" &&
-                      (!app.requiresPickup ||
-                        pickup?.pickupStatus === "Delivered to Workshop") && (
-                        <>
-                          {receivingAppId === app._id ? (
-                            <div className="flex flex-wrap items-center gap-1.5">
-                              <select
-                                value={selectedBayId}
-                                onChange={(e) => setSelectedBayId(e.target.value)}
-                                className="rounded-lg border border-orange-300 bg-white px-2.5 py-1.5 text-xs text-gray-900 outline-none focus:border-orange-700"
-                              >
-                                <option value="">Select Service Bay...</option>
-                                {availableBays.map((b) => (
-                                  <option key={b._id} value={b._id}>
-                                    {b.bayName} ({b.bayType})
-                                  </option>
-                                ))}
-                              </select>
-                              <button
-                                type="button"
-                                disabled={isReceiving}
-                                onClick={() => handleReceiveAndAssignBay(app._id)}
-                                className="rounded-lg bg-emerald-700 px-3 py-1.5 text-xs font-semibold text-white transition hover:bg-emerald-800 disabled:opacity-50"
-                              >
-                                {isReceiving ? "Saving..." : "Confirm Received"}
-                              </button>
-                              <button
-                                type="button"
-                                onClick={() => setReceivingAppId(null)}
-                                className="px-1 text-xs text-slate-400 hover:text-slate-600"
-                              >
-                                ✕
-                              </button>
-                            </div>
-                          ) : (
-                            <button
-                              type="button"
-                              onClick={() => {
-                                setReceivingAppId(app._id);
-                                setSelectedBayId(availableBays[0]?._id || "");
-                              }}
-                              className="rounded-lg bg-orange-700 px-3 py-1.5 text-xs font-semibold text-white transition hover:bg-orange-800"
-                            >
-                              Mark Vehicle Received &amp; Select Bay
-                            </button>
-                          )}
-                        </>
-                      )}
-
-                    {app.requiresPickup && onOpenDispatch && (
-                      <button
-                        type="button"
-                        onClick={onOpenDispatch}
-                        className="rounded-lg border border-gray-200 bg-slate-50 px-2.5 py-1.5 text-xs font-semibold text-slate-700 transition hover:bg-slate-100"
-                      >
-                        Dispatch Map
-                      </button>
-                    )}
-
-                    {app.status === "Confirmed" && (
-                      <button
-                        type="button"
-                        disabled={cancellingId === app._id}
-                        onClick={() => handleCancelBooking(app._id)}
-                        className="rounded-lg border border-gray-200 px-2 py-1 text-xs text-slate-500 transition hover:border-red-200 hover:bg-red-50 hover:text-red-700 disabled:opacity-50"
-                      >
-                        {cancellingId === app._id ? "Cancelling..." : "Cancel"}
-                      </button>
-                    )}
-                  </div>
-                </div>
-              </div>
-
-              {/* Status progress shown below the box */}
-              <div className="border-t border-gray-100 bg-slate-50/70 px-4 py-3">
-                {progress.isCancelled ? (
-                  <p className="text-xs font-semibold text-red-600">
-                    ✕ This booking was cancelled
-                  </p>
-                ) : (
-                  <div className="flex items-start overflow-x-auto">
-                    {progress.steps.map((label, idx) => {
-                      const isDone = idx < progress.current;
-                      const isCurrent = idx === progress.current;
-                      const isLast = idx === progress.steps.length - 1;
-                      return (
-                        <div
-                          key={label}
-                          className={`flex items-start ${isLast ? "" : "flex-1"}`}
-                        >
-                          <div className="flex w-16 shrink-0 flex-col items-center text-center">
-                            <span
-                              className={`flex h-5 w-5 items-center justify-center rounded-full text-[10px] font-bold ${
-                                isDone
-                                  ? "bg-emerald-600 text-white"
-                                  : isCurrent
-                                    ? "bg-orange-700 text-white ring-4 ring-orange-100"
-                                    : "bg-slate-200 text-slate-400"
-                              }`}
-                            >
-                              {isDone ? "✓" : idx + 1}
-                            </span>
-                            <span
-                              className={`mt-1 text-[10px] leading-tight ${
-                                isCurrent
-                                  ? "font-bold text-orange-700"
-                                  : isDone
-                                    ? "font-medium text-emerald-700"
-                                    : "text-slate-400"
-                              }`}
-                            >
-                              {label}
-                            </span>
+                            {!isLast && (
+                              <span
+                                className={`mt-2.5 h-0.5 min-w-4 flex-1 ${
+                                  isDone ? "bg-emerald-500" : "bg-slate-200"
+                                }`}
+                              />
+                            )}
                           </div>
-                          {!isLast && (
-                            <span
-                              className={`mt-2.5 h-0.5 min-w-4 flex-1 ${
-                                isDone ? "bg-emerald-500" : "bg-slate-200"
-                              }`}
-                            />
-                          )}
-                        </div>
-                      );
-                    })}
-                  </div>
-                )}
+                        );
+                      })}
+                    </div>
+                  )}
+                </div>
               </div>
-            </div>
             );
           })}
         </div>
       )}
+
+      {/* Appointment Details & Operations Popup Modal */}
+      {activeApp &&
+        (() => {
+          const vSnap = activeApp.vehicleSnapshot || {};
+          const cust = activeApp.customerId || {};
+          const pkg = activeApp.packageId || {};
+          const pickup = activeApp.pickupDelivery || null;
+          const assignedDriver = pickup?.driverId || null;
+          const isToday = formatIsoDate(activeApp.serviceDate) === todayStr;
+          const progress = getBookingProgress(activeApp);
+
+          const vehicleTitle =
+            [vSnap.brand, vSnap.modelName].filter(Boolean).join(" ") ||
+            vSnap.vehicleType ||
+            "Registered Vehicle";
+
+          const needsDriver =
+            activeApp.requiresPickup &&
+            !assignedDriver &&
+            activeApp.status !== "Cancelled" &&
+            activeApp.status !== "Completed";
+
+          const readyForBay =
+            activeApp.status === "Confirmed" &&
+            (!activeApp.requiresPickup ||
+              pickup?.pickupStatus === "Delivered to Workshop");
+
+          return (
+            <div
+              className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-3 backdrop-blur-[1px] sm:p-5"
+              onClick={closeBookingModal}
+            >
+              <div
+                onClick={(e) => e.stopPropagation()}
+                className="flex max-h-[92vh] w-full max-w-3xl flex-col overflow-hidden rounded-2xl bg-white shadow-2xl"
+              >
+                {/* Sticky Navy Header */}
+                <div className="flex flex-wrap items-center justify-between gap-3 bg-[#13294b] px-5 py-4 text-white sm:px-6">
+                  <div className="flex flex-wrap items-center gap-3">
+                    <span className="rounded-md border-2 border-black bg-yellow-400 px-3 py-1 text-sm font-black tracking-widest text-black uppercase shadow-xs">
+                      {vSnap.registrationNo || "N/A"}
+                    </span>
+                    <div>
+                      <div className="flex flex-wrap items-center gap-2">
+                        <h2 className="text-base font-bold sm:text-lg">
+                          {vehicleTitle}
+                        </h2>
+                        <span className="rounded-full bg-white/15 px-2.5 py-0.5 text-[11px] font-semibold">
+                          {vSnap.vehicleType || "Vehicle"}
+                        </span>
+                      </div>
+                      <p className="mt-0.5 text-xs text-slate-300">
+                        {isToday
+                          ? "Today"
+                          : formatDisplayDate(activeApp.serviceDate)}{" "}
+                        at {activeApp.serviceTime} ·{" "}
+                        {activeApp.requiresPickup
+                          ? "Pickup & Delivery"
+                          : "Workshop Drop-off"}
+                      </p>
+                    </div>
+                  </div>
+
+                  <div className="flex items-center gap-2.5">
+                    <span
+                      className={`rounded-full border px-3 py-1 text-xs font-bold ${
+                        STATUS_BADGE[activeApp.status] ||
+                        "bg-white text-[#13294b]"
+                      }`}
+                    >
+                      {activeApp.status}
+                    </span>
+                    <button
+                      type="button"
+                      onClick={closeBookingModal}
+                      disabled={isAssigning || isReceiving || isCancelling}
+                      aria-label="Close booking details modal"
+                      className="rounded-lg bg-white/10 px-2.5 py-1.5 text-xs font-bold text-white transition hover:bg-white/20 disabled:opacity-50"
+                    >
+                      ✕
+                    </button>
+                  </div>
+                </div>
+
+                {/* Scrollable Body */}
+                <div className="flex-1 space-y-5 overflow-y-auto p-5 sm:p-6">
+                  {modalFeedback.text && (
+                    <Alert
+                      type={modalFeedback.type || "success"}
+                      message={modalFeedback.text}
+                      onClose={() => setModalFeedback({ type: "", text: "" })}
+                    />
+                  )}
+
+                  {/* Section 1: Booking, Pricing & Customer Info */}
+                  <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                    {/* Package & Invoice Summary */}
+                    <div className="rounded-xl border border-gray-200 bg-slate-50/70 p-4">
+                      <p className="text-[11px] font-bold tracking-wider text-slate-500 uppercase">
+                        Service Package &amp; Billing
+                      </p>
+                      <dl className="mt-2.5 space-y-1.5 text-xs">
+                        <div className="flex justify-between gap-2">
+                          <dt className="text-slate-500">Package</dt>
+                          <dd className="text-right font-semibold text-[#13294b]">
+                            {pkg.packageName || "Service Package"}
+                          </dd>
+                        </div>
+                        <div className="flex justify-between gap-2">
+                          <dt className="text-slate-500">Package Price</dt>
+                          <dd className="font-medium text-slate-800">
+                            Rs. {(pkg.price || 0).toLocaleString()}
+                          </dd>
+                        </div>
+                        {activeApp.requiresPickup && (
+                          <div className="flex justify-between gap-2">
+                            <dt className="text-slate-500">Pickup &amp; Delivery</dt>
+                            <dd className="font-medium text-slate-800">
+                              Rs.{" "}
+                              {(
+                                activeApp.invoice?.pickupDeliveryCharge ||
+                                pickup?.charge ||
+                                0
+                              ).toLocaleString()}
+                              {pickup?.distance ? ` (${pickup.distance} km)` : ""}
+                            </dd>
+                          </div>
+                        )}
+                        <div className="flex items-center justify-between gap-2 border-t border-gray-200 pt-2">
+                          <dt className="font-bold text-[#13294b]">Total</dt>
+                          <dd className="flex items-center gap-2 font-extrabold text-[#13294b]">
+                            <span>
+                              Rs.{" "}
+                              {(
+                                activeApp.invoice?.totalAmount ||
+                                pkg.price ||
+                                0
+                              ).toLocaleString()}
+                            </span>
+                            <span
+                              className={`rounded-full px-2 py-0.5 text-[10px] font-bold ${
+                                activeApp.invoice?.paymentStatus === "Paid"
+                                  ? "bg-emerald-100 text-emerald-800"
+                                  : "bg-amber-100 text-amber-800"
+                              }`}
+                            >
+                              {activeApp.invoice?.paymentStatus || "Unpaid"}
+                            </span>
+                          </dd>
+                        </div>
+                      </dl>
+                    </div>
+
+                    {/* Customer & Logistics Info */}
+                    <div className="space-y-3">
+                      <div className="rounded-xl border border-gray-200 bg-slate-50/70 p-4">
+                        <p className="text-[11px] font-bold tracking-wider text-slate-500 uppercase">
+                          Customer Details
+                        </p>
+                        <p className="mt-1.5 text-sm font-bold text-[#13294b]">
+                          {cust.name || "Customer"}
+                        </p>
+                        <div className="mt-0.5 flex flex-wrap items-center gap-2 text-xs text-slate-600">
+                          {cust.contactNo ? (
+                            <a
+                              href={`tel:${cust.contactNo}`}
+                              className="font-semibold text-[#13294b] hover:underline"
+                            >
+                              {cust.contactNo}
+                            </a>
+                          ) : (
+                            <span>No phone</span>
+                          )}
+                          <span>·</span>
+                          <span>{cust.email || "No email"}</span>
+                        </div>
+                      </div>
+
+                      {activeApp.requiresPickup && (
+                        <div className="rounded-xl border border-gray-200 bg-slate-50/70 p-4">
+                          <div className="flex items-center justify-between gap-2">
+                            <p className="text-[11px] font-bold tracking-wider text-slate-500 uppercase">
+                              Pickup &amp; Driver
+                            </p>
+                            <span
+                              className={`rounded-full border px-2 py-0.5 text-[10px] font-bold ${
+                                PICKUP_BADGE[pickup?.pickupStatus] ||
+                                "border-amber-200 bg-amber-50 text-amber-800"
+                              }`}
+                            >
+                              {pickup?.pickupStatus || "Pending Assignment"}
+                            </span>
+                          </div>
+                          {activeApp.pickupLocation?.address && (
+                            <p className="mt-1.5 text-xs text-slate-600">
+                              📍 {activeApp.pickupLocation.address}
+                            </p>
+                          )}
+                          {assignedDriver ? (
+                            <p className="mt-1 text-xs font-semibold text-[#13294b]">
+                              Driver: {assignedDriver.name} (
+                              {assignedDriver.contactNo})
+                            </p>
+                          ) : (
+                            <p className="mt-1 text-xs font-medium text-amber-700">
+                              No driver assigned yet.
+                            </p>
+                          )}
+                          {onOpenDispatch && (
+                            <button
+                              type="button"
+                              onClick={() => {
+                                closeBookingModal();
+                                onOpenDispatch();
+                              }}
+                              className="mt-2 text-xs font-bold text-orange-700 hover:underline"
+                            >
+                              Open Live Dispatch Map →
+                            </button>
+                          )}
+                        </div>
+                      )}
+                    </div>
+                  </div>
+
+                  {/* Section 2: Booking Progress Timeline */}
+                  <div className="rounded-2xl border border-slate-200 bg-white p-4">
+                    <p className="mb-3 text-[11px] font-bold tracking-wider text-slate-500 uppercase">
+                      Booking Progress
+                    </p>
+                    {progress.isCancelled ? (
+                      <p className="text-xs font-semibold text-red-600">
+                        ✕ This booking was cancelled.
+                      </p>
+                    ) : (
+                      <div className="flex items-start overflow-x-auto pb-1">
+                        {progress.steps.map((label, idx) => {
+                          const isDone = idx < progress.current;
+                          const isCurrent = idx === progress.current;
+                          const isLast = idx === progress.steps.length - 1;
+                          return (
+                            <div
+                              key={label}
+                              className={`flex items-start ${isLast ? "" : "flex-1"}`}
+                            >
+                              <div className="flex w-16 shrink-0 flex-col items-center text-center">
+                                <span
+                                  className={`flex h-6 w-6 items-center justify-center rounded-full text-[11px] font-bold ${
+                                    isDone
+                                      ? "bg-emerald-600 text-white"
+                                      : isCurrent
+                                        ? "bg-orange-700 text-white ring-4 ring-orange-100"
+                                        : "bg-slate-200 text-slate-400"
+                                  }`}
+                                >
+                                  {isDone ? "✓" : idx + 1}
+                                </span>
+                                <span
+                                  className={`mt-1.5 text-[10px] leading-tight ${
+                                    isCurrent
+                                      ? "font-bold text-orange-700"
+                                      : isDone
+                                        ? "font-semibold text-emerald-700"
+                                        : "text-slate-400"
+                                  }`}
+                                >
+                                  {label}
+                                </span>
+                              </div>
+                              {!isLast && (
+                                <span
+                                  className={`mt-3 h-0.5 min-w-4 flex-1 ${
+                                    isDone ? "bg-emerald-500" : "bg-slate-200"
+                                  }`}
+                                />
+                              )}
+                            </div>
+                          );
+                        })}
+                      </div>
+                    )}
+                  </div>
+
+                  {/* Section 3: Active Workshop Service Banner */}
+                  {activeApp.status === "In Progress" && (
+                    <div className="flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-blue-200 bg-blue-50/70 p-4">
+                      <div>
+                        <p className="text-[11px] font-bold tracking-wider text-blue-700 uppercase">
+                          Currently in Workshop Service
+                        </p>
+                        <p className="mt-0.5 text-sm font-bold text-[#13294b]">
+                          {activeApp.service?.status || "Inspection"} ·{" "}
+                          {activeApp.service?.bayId?.bayName || "Service Bay"}
+                        </p>
+                      </div>
+                      {onOpenBayControl && (
+                        <button
+                          type="button"
+                          onClick={() => {
+                            closeBookingModal();
+                            onOpenBayControl();
+                          }}
+                          className="rounded-lg bg-[#13294b] px-4 py-2 text-xs font-bold text-white transition hover:bg-[#1a3660]"
+                        >
+                          Manage in Service Bay →
+                        </button>
+                      )}
+                    </div>
+                  )}
+
+                  {/* Section 4: Assign Driver (when pickup needs driver) */}
+                  {needsDriver && (
+                    <div className="rounded-2xl border border-amber-200 bg-amber-50/60 p-4">
+                      <p className="text-xs font-bold text-[#13294b]">
+                        Assign Pickup Driver
+                      </p>
+                      <p className="mt-0.5 text-[11px] text-slate-600">
+                        Select an available driver to dispatch for this
+                        vehicle&apos;s pickup.
+                      </p>
+                      <div className="mt-3 flex flex-wrap items-center gap-2">
+                        <select
+                          value={selectedDriverId}
+                          onChange={(e) => setSelectedDriverId(e.target.value)}
+                          className="min-w-[220px] flex-1 rounded-lg border border-gray-300 bg-white px-3 py-2 text-xs text-gray-900 outline-none focus:border-orange-700"
+                        >
+                          <option value="">Select Available Driver...</option>
+                          {availableDrivers.map((d) => (
+                            <option key={d._id} value={d._id}>
+                              {d.name} ({d.contactNo})
+                            </option>
+                          ))}
+                        </select>
+                        <button
+                          type="button"
+                          disabled={isAssigning || !selectedDriverId}
+                          onClick={() => handleAssignDriver(activeApp._id)}
+                          className="rounded-lg bg-[#13294b] px-4 py-2 text-xs font-bold text-white transition hover:bg-[#1a3660] disabled:opacity-50"
+                        >
+                          {isAssigning ? "Assigning..." : "Assign Driver"}
+                        </button>
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Section 5: Receive Vehicle & Select Service Bay */}
+                  {readyForBay && (
+                    <div className="rounded-2xl border border-emerald-200 bg-emerald-50/60 p-4">
+                      <p className="text-xs font-bold text-[#13294b]">
+                        Receive Vehicle &amp; Allocate Service Bay
+                      </p>
+                      <p className="mt-0.5 text-[11px] text-slate-600">
+                        Choose an available bay to check this vehicle in and
+                        start Inspection.
+                      </p>
+                      {availableBays.length === 0 ? (
+                        <p className="mt-2 text-xs font-semibold text-red-600">
+                          All service bays are currently occupied. Complete an
+                          active service to free a bay.
+                        </p>
+                      ) : (
+                        <div className="mt-3 space-y-3">
+                          <div className="grid grid-cols-2 gap-2 sm:grid-cols-3">
+                            {availableBays.map((bay) => {
+                              const isSelected = selectedBayId === bay._id;
+                              return (
+                                <button
+                                  key={bay._id}
+                                  type="button"
+                                  onClick={() => setSelectedBayId(bay._id)}
+                                  className={`rounded-xl border px-3 py-2 text-left transition ${
+                                    isSelected
+                                      ? "border-emerald-700 bg-emerald-700 text-white shadow-xs"
+                                      : "border-gray-300 bg-white text-[#13294b] hover:border-emerald-500"
+                                  }`}
+                                >
+                                  <p className="text-xs font-bold">
+                                    {bay.bayName}
+                                  </p>
+                                  <p
+                                    className={`text-[10px] ${
+                                      isSelected
+                                        ? "text-emerald-100"
+                                        : "text-slate-500"
+                                    }`}
+                                  >
+                                    {bay.bayType}
+                                  </p>
+                                </button>
+                              );
+                            })}
+                          </div>
+                          <button
+                            type="button"
+                            disabled={isReceiving || !selectedBayId}
+                            onClick={() =>
+                              handleReceiveAndAssignBay(activeApp._id)
+                            }
+                            className="w-full rounded-lg bg-emerald-700 px-4 py-2.5 text-xs font-bold text-white transition hover:bg-emerald-800 disabled:opacity-50"
+                          >
+                            {isReceiving
+                              ? "Checking In..."
+                              : "Confirm Vehicle Received & Start Inspection ✓"}
+                          </button>
+                        </div>
+                      )}
+                    </div>
+                  )}
+
+                  {/* Footer Actions (Cancel Booking / Close) */}
+                  <div className="flex flex-wrap items-center justify-between gap-2 border-t border-gray-100 pt-3">
+                    {activeApp.status === "Confirmed" ? (
+                      confirmCancel ? (
+                        <div className="flex items-center gap-2">
+                          <span className="text-xs font-semibold text-red-700">
+                            Cancel this booking?
+                          </span>
+                          <button
+                            type="button"
+                            disabled={isCancelling}
+                            onClick={() => handleCancelBooking(activeApp._id)}
+                            className="rounded-lg bg-red-600 px-3 py-1.5 text-xs font-bold text-white hover:bg-red-700 disabled:opacity-50"
+                          >
+                            {isCancelling ? "Cancelling..." : "Yes, Cancel"}
+                          </button>
+                          <button
+                            type="button"
+                            disabled={isCancelling}
+                            onClick={() => setConfirmCancel(false)}
+                            className="rounded-lg border border-gray-300 px-3 py-1.5 text-xs font-semibold text-slate-600 hover:bg-slate-50"
+                          >
+                            Keep
+                          </button>
+                        </div>
+                      ) : (
+                        <button
+                          type="button"
+                          onClick={() => setConfirmCancel(true)}
+                          className="rounded-lg border border-red-200 px-3 py-1.5 text-xs font-semibold text-red-600 transition hover:bg-red-50"
+                        >
+                          Cancel Booking
+                        </button>
+                      )
+                    ) : (
+                      <div />
+                    )}
+
+                    <button
+                      type="button"
+                      onClick={closeBookingModal}
+                      disabled={isAssigning || isReceiving || isCancelling}
+                      className="rounded-lg border border-gray-300 bg-white px-4 py-1.5 text-xs font-semibold text-slate-700 transition hover:bg-slate-50"
+                    >
+                      Close
+                    </button>
+                  </div>
+                </div>
+              </div>
+            </div>
+          );
+        })()}
     </div>
   );
 }

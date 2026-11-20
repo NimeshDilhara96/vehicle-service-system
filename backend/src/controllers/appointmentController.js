@@ -724,23 +724,22 @@ exports.updateAppointmentStatusAdmin = async (req, res, next) => {
       .lean();
 
     if (status === "In Progress" && !serviceDoc && claimedBay) {
-      const availableMechanic = await User.findOne({
-        role: "Mechanic",
-        isActive: true,
-      })
-        .select("_id")
-        .lean();
-
-      const mechanicIdToUse = availableMechanic?._id || req.user._id;
-
       const createdSrv = await Service.create({
         customerId: updated.customerId?._id || updated.customerId,
         vehicleId: updated.vehicleId,
         vehicleSnapshot: updated.vehicleSnapshot,
         appointmentId: updated._id,
-        mechanicId: mechanicIdToUse,
         bayId: claimedBay._id,
         status: "Inspection",
+        statusLogs: [
+          {
+            stage: "Inspection",
+            note: `Vehicle allocated to ${claimedBay.bayName}`,
+            updatedBy: req.user._id,
+            updatedByName: req.user.name || req.user.role || "Admin",
+            updatedAt: new Date(),
+          },
+        ],
       });
 
       claimedBay.currentServiceId = createdSrv._id;
