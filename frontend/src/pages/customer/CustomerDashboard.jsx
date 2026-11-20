@@ -22,6 +22,12 @@ const STAGE_BADGE = {
   "Waiting for Approval": "bg-amber-100 text-amber-900",
   "In Progress": "bg-blue-100 text-blue-800",
   "Waiting for Parts": "bg-purple-100 text-purple-800",
+  "Out for Return Delivery": "bg-emerald-100 text-emerald-900",
+  "Ready for Return Delivery": "bg-emerald-50 text-emerald-800",
+  "Driver Assigned": "bg-blue-100 text-blue-800",
+  "En Route to Pickup": "bg-indigo-100 text-indigo-800",
+  "Vehicle Picked Up": "bg-purple-100 text-purple-800",
+  "Delivered to Workshop": "bg-emerald-100 text-emerald-800",
   Completed: "bg-emerald-100 text-emerald-800",
   Confirmed: "bg-blue-50 text-blue-700",
   Pending: "bg-amber-50 text-amber-800",
@@ -68,6 +74,17 @@ function formatTimeAgo(val) {
   }
 }
 
+function isBookingActive(b) {
+  if (!b || b.status === "Cancelled") return false;
+  if (b.requiresPickup) {
+    const pStatus = b.pickupDelivery?.pickupStatus || "";
+    if (pStatus === "Delivered to Customer") return false;
+    if (b.status === "Completed" && !b.pickupDelivery) return false;
+    return true;
+  }
+  return b.status !== "Completed" && b.service?.status !== "Completed";
+}
+
 function buildBookingPipeline(booking) {
   if (!booking || booking.status === "Cancelled") {
     return {
@@ -86,6 +103,7 @@ function buildBookingPipeline(booking) {
         "Vehicle Check",
         "In Progress",
         "Approval",
+        "Return Delivery",
         "Completed",
       ]
     : ["Booked", "Vehicle Check", "In Progress", "Approval", "Completed"];
@@ -93,6 +111,7 @@ function buildBookingPipeline(booking) {
   const lastIdx = steps.length - 1;
   const offset = isPickup ? 1 : 0;
   const srvStatus = booking.service?.status || "";
+  const pStatus = booking.pickupDelivery?.pickupStatus || "";
   const works = Array.isArray(booking.service?.additionalWorks)
     ? booking.service.additionalWorks
     : [];
@@ -102,20 +121,37 @@ function buildBookingPipeline(booking) {
   );
 
   let current = 0;
-  if (booking.status === "Completed" || srvStatus === "Completed") {
+  let badgeText = srvStatus || booking.status;
+
+  if (isPickup && pStatus === "Delivered to Customer") {
     current = lastIdx;
+    badgeText = "Completed";
+  } else if (
+    isPickup &&
+    (pStatus === "Out for Return Delivery" || srvStatus === "Completed")
+  ) {
+    current = lastIdx - 1; // Return Delivery
+    badgeText =
+      pStatus === "Out for Return Delivery"
+        ? "Out for Return Delivery"
+        : "Ready for Return Delivery";
+  } else if (!isPickup && (booking.status === "Completed" || srvStatus === "Completed")) {
+    current = lastIdx;
+    badgeText = "Completed";
   } else if (srvStatus === "Waiting for Approval" || hasPending) {
     current = 3 + offset;
+    badgeText = "Waiting for Approval";
   } else if (srvStatus === "In Progress" || srvStatus === "Waiting for Parts") {
     current = hasResponded ? 3 + offset : 2 + offset;
+    badgeText = srvStatus;
   } else if (
     srvStatus === "Inspection" ||
     srvStatus === "Vehicle Received" ||
     booking.status === "In Progress"
   ) {
     current = 1 + offset;
+    badgeText = srvStatus || "Inspection";
   } else if (isPickup) {
-    const pStatus = booking.pickupDelivery?.pickupStatus || "";
     if (
       pStatus === "Driver Assigned" ||
       pStatus === "En Route to Pickup" ||
@@ -123,10 +159,10 @@ function buildBookingPipeline(booking) {
       pStatus === "Delivered to Workshop"
     ) {
       current = 1;
+      badgeText = pStatus;
     }
   }
 
-  const badgeText = srvStatus || booking.status;
   return { steps, current, badgeText };
 }
 
@@ -382,47 +418,49 @@ function CustomerDashboard() {
 
   const displayName = user?.name || "Customer";
 
-  // Pick the most relevant active booking (In Progress / Confirmed first, else most recent non-cancelled)
+  // Only show an ACTIVE booking on the Dashboard (completed bookings move to History in My Bookings!)
+  // For Pickup & Delivery bookings, stays active until "Delivered to Customer" even after workshop service completes.
   const activeBooking = useMemo(() => {
+    const activeList = bookings.filter(isBookingActive);
     return (
-      bookings.find((b) => b.status === "In Progress") ||
-      bookings.find((b) => b.status === "Confirmed" || b.status === "Pending") ||
-      bookings.find((b) => b.status !== "Cancelled") ||
-      bookings[0] ||
+      activeList.find(
+        (b) => b.pickupDelivery?.pickupStatus === "Out for Return Delivery",
+      ) ||
+      activeList.find((b) => b.status === "In Progress") ||
+      activeList[0] ||
       null
     );
   }, [bookings]);
 
   const stats = useMemo(() => {
     let activeCount = 0;
+    let historyCount = 0;
     let pendingApprovals = 0;
 
     for (const b of bookings) {
-      if (b.status !== "Completed" && b.status !== "Cancelled") {
+      if (isBookingActive(b)) {
         activeCount += 1;
-      }
-      const works = Array.isArray(b.service?.additionalWorks)
-        ? b.service.additionalWorks
-        : [];
-      for (const w of works) {
-        if (w.status === "Pending Approval") pendingApprovals += 1;
+        const works = Array.isArray(b.service?.additionalWorks)
+          ? b.service.additionalWorks
+          : [];
+        for (const w of works) {
+          if (w.status === "Pending Approval") pendingApprovals += 1;
+        }
+      } else {
+        historyCount += 1;
       }
     }
 
-    return { activeCount, pendingApprovals };
+    return { activeCount, historyCount, pendingApprovals };
   }, [bookings]);
 
   const vSnap = activeBooking?.vehicleSnapshot || null;
   const vehicleTitle = vSnap
     ? [vSnap.brand, vSnap.modelName].filter(Boolean).join(" ") ||
       vSnap.vehicleType
-    : vehicles[0]
-      ? [vehicles[0].brand, vehicles[0].modelName].filter(Boolean).join(" ") ||
-        vehicles[0].vehicleType
-      : "No Vehicle Registered";
+    : "";
 
-  const plateNo =
-    vSnap?.registrationNo || vehicles[0]?.registrationNo || null;
+  const plateNo = vSnap?.registrationNo || null;
 
   const formattedBookingDate = activeBooking?.serviceDate
     ? new Date(activeBooking.serviceDate).toLocaleDateString("en-GB", {
@@ -440,11 +478,65 @@ function CustomerDashboard() {
     [activeBooking],
   );
 
-  const activeDriver = activeBooking?.pickupDelivery?.driverId || null;
+  const activePickup = activeBooking?.pickupDelivery || null;
+  const activePickupStatus = activePickup?.pickupStatus || "";
+  const activeDriver = activePickup?.driverId || null;
   const activeBay = activeBooking?.service?.bayId || null;
   const activeLogs = Array.isArray(activeBooking?.service?.statusLogs)
     ? activeBooking.service.statusLogs
     : [];
+
+  const isReturningPhase = Boolean(
+    activeBooking?.requiresPickup &&
+      (activePickupStatus === "Out for Return Delivery" ||
+        (activeBooking.service?.status === "Completed" &&
+          activePickupStatus !== "Delivered to Customer")),
+  );
+
+  const isPickupPhase = Boolean(
+    activeBooking?.requiresPickup &&
+      !activeBooking.service &&
+      activePickupStatus !== "Delivered to Workshop" &&
+      activePickupStatus !== "Delivered to Customer",
+  );
+
+  const isInWorkshopPhase = Boolean(
+    activeBooking?.service && activeBooking.service.status !== "Completed",
+  );
+
+  const driverTrackingConfig = useMemo(() => {
+    if (!activeBooking?.requiresPickup) return null;
+    const driverCoords = activePickup?.driverLiveLocation?.coordinates || null;
+
+    if (activePickupStatus === "En Route to Pickup") {
+      return {
+        active: true,
+        direction: "to-customer",
+        label: "Driver En Route to You",
+        driverName: activeDriver?.name || "Driver",
+        coords: driverCoords,
+      };
+    }
+    if (activePickupStatus === "Vehicle Picked Up") {
+      return {
+        active: true,
+        direction: "to-workshop",
+        label: "Heading to Workshop",
+        driverName: activeDriver?.name || "Driver",
+        coords: driverCoords,
+      };
+    }
+    if (activePickupStatus === "Out for Return Delivery") {
+      return {
+        active: true,
+        direction: "returning",
+        label: "Returning Your Vehicle",
+        driverName: activeDriver?.name || "Driver",
+        coords: driverCoords,
+      };
+    }
+    return null;
+  }, [activeBooking, activePickup, activePickupStatus, activeDriver]);
 
   const pickupMapCoords =
     Array.isArray(activeBooking?.pickupLocation?.coordinates) &&
@@ -702,355 +794,105 @@ function CustomerDashboard() {
                   className="rounded-2xl border border-gray-200 bg-white p-4 text-left shadow-2xs transition hover:border-orange-300"
                 >
                   <p className="text-xs font-medium text-slate-500">
-                    Active Bookings
+                    Active Services
                   </p>
                   <p className="mt-1 text-2xl font-extrabold text-blue-700">
                     {stats.activeCount}
                   </p>
                 </button>
 
-                <button
-                  type="button"
-                  onClick={() => {
-                    if (stats.pendingApprovals > 0) {
+                {stats.pendingApprovals > 0 ? (
+                  <button
+                    type="button"
+                    onClick={() => {
                       approvalSectionRef.current?.scrollIntoView({
                         behavior: "smooth",
                         block: "center",
                       });
-                    } else {
-                      setActiveTab("My Bookings");
-                    }
-                  }}
-                  className={`rounded-2xl border p-4 text-left shadow-2xs transition ${
-                    stats.pendingApprovals > 0
-                      ? "border-amber-300 bg-amber-50/50 hover:border-amber-400"
-                      : "border-gray-200 bg-white hover:border-orange-300"
-                  }`}
-                >
-                  <p className="text-xs font-medium text-slate-500">
-                    Pending Approvals
-                  </p>
-                  <p
-                    className={`mt-1 text-2xl font-extrabold ${
-                      stats.pendingApprovals > 0
-                        ? "text-amber-700"
-                        : "text-emerald-700"
-                    }`}
+                    }}
+                    className="rounded-2xl border border-amber-300 bg-amber-50/50 p-4 text-left shadow-2xs transition hover:border-amber-400"
                   >
-                    {stats.pendingApprovals}
-                  </p>
-                </button>
+                    <p className="text-xs font-medium text-slate-500">
+                      Pending Approvals
+                    </p>
+                    <p className="mt-1 text-2xl font-extrabold text-amber-700">
+                      {stats.pendingApprovals}
+                    </p>
+                  </button>
+                ) : (
+                  <button
+                    type="button"
+                    onClick={() => setActiveTab("My Bookings")}
+                    className="rounded-2xl border border-gray-200 bg-white p-4 text-left shadow-2xs transition hover:border-orange-300"
+                  >
+                    <p className="text-xs font-medium text-slate-500">
+                      Service History
+                    </p>
+                    <p className="mt-1 text-2xl font-extrabold text-emerald-700">
+                      {stats.historyCount}
+                    </p>
+                  </button>
+                )}
               </div>
 
-              {/* Hero Active Vehicle Status Card */}
-              <section className="overflow-hidden rounded-2xl border border-gray-200 bg-white shadow-2xs">
-                <div className="flex flex-wrap items-center justify-between gap-3 bg-[#13294b] px-5 py-4 text-white sm:px-6">
-                  <div className="flex flex-wrap items-center gap-3">
-                    {plateNo && (
-                      <span className="rounded-md border-2 border-black bg-yellow-400 px-3 py-1 text-xs font-black tracking-widest text-black uppercase">
-                        {plateNo}
-                      </span>
-                    )}
+              {/* STATE A: No Active Booking — Clean Normal View (Booking Prompt + Workshop Map Only) */}
+              {!activeBooking ? (
+                <>
+                  <section className="flex flex-wrap items-center justify-between gap-4 rounded-2xl border border-gray-200 bg-white p-5 shadow-2xs sm:p-6">
                     <div>
-                      <h2 className="text-base font-bold">{vehicleTitle}</h2>
-                      <p className="mt-0.5 text-xs text-slate-300">
-                        {activeBooking
-                          ? `${packageName} · ${formattedBookingDate} at ${activeBooking.serviceTime}`
-                          : "Schedule a service to track your vehicle progress here."}
+                      <h2 className="text-base font-bold text-[#13294b]">
+                        Ready for your next vehicle service?
+                      </h2>
+                      <p className="mt-1 text-xs text-slate-500">
+                        Book a maintenance package with optional doorstep pickup
+                        &amp; return delivery within the Western Province.
                       </p>
                     </div>
-                  </div>
-
-                  <div className="flex flex-wrap items-center gap-2">
-                    {activeBay?.bayName &&
-                      activeBooking?.status === "In Progress" && (
-                        <span className="rounded-full bg-white/15 px-3 py-1 text-[11px] font-semibold text-white">
-                          {activeBay.bayName} ({activeBay.bayType})
-                        </span>
-                      )}
-                    <span
-                      className={`rounded-full px-3 py-1 text-xs font-bold ${
-                        STAGE_BADGE[pipeline.badgeText] ||
-                        "bg-white text-[#13294b]"
-                      }`}
-                    >
-                      {pipeline.badgeText}
-                    </span>
-                  </div>
-                </div>
-
-                <div className="p-5 sm:p-6">
-                  {/* Horizontal Service Stepper */}
-                  <div className="flex items-start overflow-x-auto pb-1">
-                    {pipeline.steps.map((label, idx) => {
-                      const isDone =
-                        pipeline.current >= 0 && idx < pipeline.current;
-                      const isCurrent = idx === pipeline.current;
-                      const isLast = idx === pipeline.steps.length - 1;
-
-                      return (
-                        <div
-                          key={label}
-                          className={`flex items-start ${isLast ? "" : "flex-1"}`}
+                    <div className="flex flex-wrap items-center gap-2.5">
+                      {stats.historyCount > 0 && (
+                        <button
+                          type="button"
+                          onClick={() => setActiveTab("My Bookings")}
+                          className="rounded-xl border border-gray-300 bg-white px-4 py-2.5 text-xs font-semibold text-[#13294b] transition hover:bg-slate-50"
                         >
-                          <div className="flex w-20 shrink-0 flex-col items-center text-center">
-                            <span
-                              className={`flex h-7 w-7 items-center justify-center rounded-full text-xs font-bold ${
-                                isDone
-                                  ? "bg-emerald-600 text-white"
-                                  : isCurrent
-                                    ? "bg-orange-600 text-white ring-4 ring-orange-100"
-                                    : "bg-slate-200 text-slate-400"
-                              }`}
-                            >
-                              {isDone ? "✓" : idx + 1}
-                            </span>
-                            <span
-                              className={`mt-1.5 text-[11px] leading-tight ${
-                                isCurrent
-                                  ? "font-bold text-[#13294b]"
-                                  : isDone
-                                    ? "font-semibold text-emerald-700"
-                                    : "text-slate-400"
-                              }`}
-                            >
-                              {label}
-                            </span>
-                          </div>
-                          {!isLast && (
-                            <span
-                              className={`mt-3.5 h-0.5 min-w-4 flex-1 ${
-                                isDone ? "bg-emerald-500" : "bg-slate-200"
-                              }`}
-                            />
-                          )}
-                        </div>
-                      );
-                    })}
-                  </div>
-
-                  {activeBooking && (
-                    <div className="mt-4 flex flex-wrap items-center justify-between gap-2 border-t border-gray-100 pt-3.5 text-xs">
-                      <div className="text-slate-600">
-                        {activeBooking.invoice?.totalAmount !== undefined && (
-                          <span>
-                            Estimated Total:{" "}
-                            <strong className="text-sm text-[#13294b]">
-                              Rs.{" "}
-                              {Number(
-                                activeBooking.invoice.totalAmount || 0,
-                              ).toLocaleString()}
-                            </strong>
-                            <span className="ml-1.5 text-slate-400">
-                              ({activeBooking.invoice.paymentStatus || "Unpaid"})
-                            </span>
-                          </span>
-                        )}
-                      </div>
+                          View Service History ({stats.historyCount})
+                        </button>
+                      )}
                       <button
                         type="button"
-                        onClick={() => setActiveTab("My Bookings")}
-                        className="font-bold text-orange-700 hover:underline"
+                        onClick={() => setActiveTab("Book a Service")}
+                        className="rounded-xl bg-[#13294b] px-5 py-2.5 text-xs font-bold text-white transition hover:bg-[#1a3660]"
                       >
-                        View All Bookings &amp; Full Details →
+                        Book a Service →
                       </button>
                     </div>
-                  )}
-                </div>
-              </section>
+                  </section>
 
-              {/* Workshop Inspection Notes & Additional Repairs Approval Card */}
-              {activeBooking?.service &&
-                ((activeBooking.service.additionalWorks || []).length > 0 ||
-                  activeBooking.service.inspectionNotes) &&
-                (() => {
-                  const srv = activeBooking.service;
-                  const inv = activeBooking.invoice || {};
-                  const works = Array.isArray(srv.additionalWorks)
-                    ? srv.additionalWorks
-                    : [];
-                  const pendingWorks = works.filter(
-                    (w) => w.status === "Pending Approval",
-                  );
-
-                  return (
-                    <section
-                      ref={approvalSectionRef}
-                      className={`rounded-2xl border p-5 shadow-2xs sm:p-6 ${
-                        pendingWorks.length > 0
-                          ? "border-amber-300 bg-amber-50/40"
-                          : "border-gray-200 bg-white"
-                      }`}
-                    >
-                      <div className="flex flex-wrap items-start justify-between gap-2">
-                        <div>
-                          <h3 className="text-sm font-bold text-[#13294b] sm:text-base">
-                            Workshop Inspection &amp; Additional Repairs
-                          </h3>
-                          <p className="mt-0.5 text-xs text-slate-500">
-                            Review extra issues or spare parts reported by our
-                            technicians and approve or reject each item.
-                          </p>
-                        </div>
-                        {pendingWorks.length > 0 && (
-                          <span className="rounded-full bg-amber-100 px-3 py-1 text-xs font-bold text-amber-900">
-                            Action Required ({pendingWorks.length})
-                          </span>
-                        )}
-                      </div>
-
-                      {srv.inspectionNotes && (
-                        <div className="mt-3 rounded-xl border border-slate-200 bg-white p-3 text-xs text-slate-700">
-                          <span className="font-bold text-[#13294b]">
-                            Technician Notes:{" "}
-                          </span>
-                          {srv.inspectionNotes}
-                        </div>
-                      )}
-
-                      {works.length > 0 && (
-                        <div className="mt-3.5 space-y-2.5">
-                          {works.map((item) => {
-                            const isPending =
-                              item.status === "Pending Approval";
-                            const isBusy = respondingItemId === item._id;
-
-                            return (
-                              <div
-                                key={item._id}
-                                className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-gray-200 bg-white p-3.5"
-                              >
-                                <div className="min-w-0 flex-1">
-                                  <div className="flex flex-wrap items-center gap-2">
-                                    <span className="text-xs font-bold text-[#13294b] sm:text-sm">
-                                      {item.title}
-                                    </span>
-                                    <span className="rounded bg-slate-100 px-1.5 py-0.5 text-[10px] font-semibold text-slate-600">
-                                      {item.category || "Repair"}
-                                    </span>
-                                    {!isPending && (
-                                      <span
-                                        className={`rounded-full px-2 py-0.5 text-[10px] font-bold ${
-                                          item.status === "Approved"
-                                            ? "bg-emerald-100 text-emerald-800"
-                                            : "bg-red-100 text-red-700"
-                                        }`}
-                                      >
-                                        {item.status === "Approved"
-                                          ? "✓ Approved"
-                                          : "✕ Rejected"}
-                                      </span>
-                                    )}
-                                  </div>
-                                  {item.description && (
-                                    <p className="mt-1 text-xs text-slate-500">
-                                      {item.description}
-                                    </p>
-                                  )}
-                                </div>
-
-                                <div className="flex flex-wrap items-center gap-3">
-                                  <span className="text-sm font-extrabold text-[#13294b]">
-                                    Rs.{" "}
-                                    {Number(
-                                      item.estimatedCost || 0,
-                                    ).toLocaleString()}
-                                  </span>
-
-                                  {isPending && (
-                                    <div className="flex items-center gap-2">
-                                      <button
-                                        type="button"
-                                        disabled={isBusy}
-                                        onClick={() =>
-                                          handleRespondAdditionalWork(
-                                            srv._id,
-                                            item._id,
-                                            "Approved",
-                                          )
-                                        }
-                                        className="rounded-lg bg-emerald-700 px-3 py-1.5 text-xs font-bold text-white transition hover:bg-emerald-800 disabled:opacity-50"
-                                      >
-                                        {isBusy ? "..." : "Approve ✓"}
-                                      </button>
-                                      <button
-                                        type="button"
-                                        disabled={isBusy}
-                                        onClick={() =>
-                                          handleRespondAdditionalWork(
-                                            srv._id,
-                                            item._id,
-                                            "Rejected",
-                                          )
-                                        }
-                                        className="rounded-lg border border-red-200 bg-white px-3 py-1.5 text-xs font-bold text-red-600 transition hover:bg-red-50 disabled:opacity-50"
-                                      >
-                                        Reject ✕
-                                      </button>
-                                    </div>
-                                  )}
-                                </div>
-                              </div>
-                            );
-                          })}
-                        </div>
-                      )}
-
-                      {inv.totalAmount !== undefined && (
-                        <div className="mt-4 flex flex-wrap items-center justify-between gap-2 rounded-xl bg-[#13294b] px-4 py-3 text-xs text-white">
-                          <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-slate-300">
-                            <span>
-                              Package: Rs.{" "}
-                              {Number(inv.packageCharge || 0).toLocaleString()}
-                            </span>
-                            {Number(inv.pickupDeliveryCharge || 0) > 0 && (
-                              <span>
-                                Pickup: Rs.{" "}
-                                {Number(
-                                  inv.pickupDeliveryCharge || 0,
-                                ).toLocaleString()}
-                              </span>
-                            )}
-                            <span>
-                              Approved Extras: Rs.{" "}
-                              {Number(
-                                inv.additionalWorkCharge || 0,
-                              ).toLocaleString()}
-                            </span>
-                          </div>
-                          <span className="text-sm font-extrabold text-yellow-300">
-                            Total: Rs.{" "}
-                            {Number(inv.totalAmount || 0).toLocaleString()}
-                          </span>
-                        </div>
-                      )}
-                    </section>
-                  );
-                })()}
-
-              {/* Bottom 2-Column Section: Workshop Map + Driver & Recent Updates */}
-              <div className="grid grid-cols-1 gap-4 lg:grid-cols-3 lg:gap-5">
-                {/* Route & Service Centre Map */}
-                <section className="flex flex-col justify-between rounded-2xl border border-gray-200 bg-white p-4 shadow-2xs sm:p-5 lg:col-span-2">
-                  <div>
+                  {/* Full-width Clean Workshop Locations Map */}
+                  <section className="rounded-2xl border border-gray-200 bg-white p-4 shadow-2xs sm:p-5">
                     <div className="mb-3 flex items-center justify-between">
-                      <h3 className="text-sm font-bold text-[#13294b]">
-                        Service Route &amp; Workshop Locations
-                      </h3>
+                      <div>
+                        <h3 className="text-sm font-bold text-[#13294b]">
+                          Our Service Centres
+                        </h3>
+                        <p className="text-xs text-slate-500">
+                          Colombo Main Workshop · Gampaha Branch · Kalutara
+                          Branch
+                        </p>
+                      </div>
                       <button
                         type="button"
                         onClick={handleResetMap}
                         className="rounded-lg border border-gray-200 bg-slate-50 px-2.5 py-1 text-[11px] font-semibold text-slate-600 transition hover:bg-slate-100"
                       >
-                        Reset Route
+                        Reset Map
                       </button>
                     </div>
 
-                    <div className="relative mx-auto w-full [&_input]:text-xs sm:[&_input]:text-sm [&_.smart-map-container]:gap-2.5! [&_.smart-map-container>div:nth-of-type(2)]:h-60!">
+                    <div className="relative mx-auto w-full [&_input]:text-xs sm:[&_input]:text-sm [&_.smart-map-container]:max-w-none! [&_.smart-map-container]:gap-2.5! [&_.smart-map-container>div:nth-of-type(2)]:h-72!">
                       <SmartMap
                         resetTrigger={resetCount}
                         shopCoords={[6.9271, 79.8612]}
-                        externalStartPoint={pickupMapCoords}
                         mode="routing"
                         theme="light"
                         showSearchBox={true}
@@ -1059,136 +901,536 @@ function CustomerDashboard() {
                         onOrderReady={handleOrderReady}
                       />
                     </div>
-                  </div>
-
-                  <div className="mt-3 flex flex-wrap items-center justify-between gap-2 text-xs text-slate-500">
-                    <span>
-                      {routeCoords
-                        ? `Route selected (${routeCoords.startCoords[0].toFixed(4)}, ${routeCoords.startCoords[1].toFixed(4)})`
-                        : activeBooking?.pickupLocation?.address
-                          ? `Pickup: ${activeBooking.pickupLocation.address}`
-                          : "Workshop Drop-off · Colombo"}
-                    </span>
-                    <span className="font-medium text-slate-700">
-                      Main Service Centre, Colombo
-                    </span>
-                  </div>
-                </section>
-
-                {/* Right Column: Real Driver / Bay Info + Recent Updates */}
-                <div className="space-y-4">
-                  {/* Handover / Driver Card (Real Data Only) */}
-                  <section className="rounded-2xl border border-gray-200 bg-white p-4 shadow-2xs sm:p-5">
-                    <h3 className="text-sm font-bold text-[#13294b]">
-                      {activeBooking?.requiresPickup
-                        ? "Pickup & Delivery Driver"
-                        : "Workshop Service Bay"}
-                    </h3>
-
-                    {activeBooking?.requiresPickup ? (
-                      activeDriver ? (
-                        <div className="mt-3 space-y-3">
-                          <div className="flex items-center gap-3">
-                            <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-full bg-[#13294b] text-sm font-bold text-white">
-                              {(activeDriver.name || "D")
-                                .charAt(0)
-                                .toUpperCase()}
-                            </div>
-                            <div className="min-w-0 flex-1">
-                              <p className="truncate text-sm font-bold text-[#13294b]">
-                                {activeDriver.name}
-                              </p>
-                              <p className="text-xs text-slate-500">
-                                {activeDriver.contactNo}
-                              </p>
-                            </div>
-                          </div>
-
-                          <div className="rounded-lg bg-slate-50 px-3 py-2 text-xs">
-                            <span className="text-slate-500">Status: </span>
-                            <strong className="text-[#13294b]">
-                              {activeBooking.pickupDelivery?.pickupStatus ||
-                                "Assigned"}
-                            </strong>
-                          </div>
-
-                          {activeDriver.contactNo && (
-                            <a
-                              href={`tel:${activeDriver.contactNo}`}
-                              className="block w-full rounded-lg border border-[#13294b] bg-white py-2 text-center text-xs font-bold text-[#13294b] transition hover:bg-slate-50"
-                            >
-                              Call Driver
-                            </a>
-                          )}
-                        </div>
-                      ) : (
-                        <p className="mt-3 rounded-xl border border-dashed border-gray-200 p-4 text-center text-xs text-slate-500">
-                          Driver assignment is pending for your pickup booking.
-                        </p>
-                      )
-                    ) : activeBay?.bayName ? (
-                      <div className="mt-3 rounded-xl bg-blue-50/70 p-3.5">
-                        <p className="text-sm font-bold text-[#13294b]">
-                          {activeBay.bayName}
-                        </p>
-                        <p className="text-xs text-slate-600">
-                          {activeBay.bayType} Bay · Stage:{" "}
-                          <strong>{activeBooking?.service?.status}</strong>
-                        </p>
-                      </div>
-                    ) : (
-                      <p className="mt-3 rounded-xl border border-dashed border-gray-200 p-4 text-center text-xs text-slate-500">
-                        {activeBooking
-                          ? "Workshop Drop-off at Main Service Centre, Colombo."
-                          : "Book a service to see driver or service bay details."}
-                      </p>
-                    )}
                   </section>
+                </>
+              ) : (
+                /* STATE B: Active Booking (Pickup / In Workshop / Return Delivery) */
+                <>
+                  {/* Hero Active Vehicle Status Card */}
+                  <section className="overflow-hidden rounded-2xl border border-gray-200 bg-white shadow-2xs">
+                    <div className="flex flex-wrap items-center justify-between gap-3 bg-[#13294b] px-5 py-4 text-white sm:px-6">
+                      <div className="flex flex-wrap items-center gap-3">
+                        {plateNo && (
+                          <span className="rounded-md border-2 border-black bg-yellow-400 px-3 py-1 text-xs font-black tracking-widest text-black uppercase">
+                            {plateNo}
+                          </span>
+                        )}
+                        <div>
+                          <h2 className="text-base font-bold">
+                            {vehicleTitle}
+                          </h2>
+                          <p className="mt-0.5 text-xs text-slate-300">
+                            {packageName} · {formattedBookingDate} at{" "}
+                            {activeBooking.serviceTime}
+                          </p>
+                        </div>
+                      </div>
 
-                  {/* Recent Workshop Updates */}
-                  <section className="rounded-2xl border border-gray-200 bg-white p-4 shadow-2xs sm:p-5">
-                    <h3 className="text-sm font-bold text-[#13294b]">
-                      Recent Updates
-                    </h3>
-                    {activeLogs.length === 0 ? (
-                      <p className="mt-3 text-xs text-slate-400">
-                        No workshop updates recorded yet.
-                      </p>
-                    ) : (
-                      <div className="mt-3 space-y-2.5">
-                        {[...activeLogs]
-                          .reverse()
-                          .slice(0, 4)
-                          .map((log, idx) => (
+                      <div className="flex flex-wrap items-center gap-2">
+                        {activeBay?.bayName && isInWorkshopPhase && (
+                          <span className="rounded-full bg-white/15 px-3 py-1 text-[11px] font-semibold text-white">
+                            {activeBay.bayName} ({activeBay.bayType})
+                          </span>
+                        )}
+                        <span
+                          className={`rounded-full px-3 py-1 text-xs font-bold ${
+                            STAGE_BADGE[pipeline.badgeText] ||
+                            "bg-white text-[#13294b]"
+                          }`}
+                        >
+                          {pipeline.badgeText}
+                        </span>
+                      </div>
+                    </div>
+
+                    <div className="p-5 sm:p-6">
+                      {/* Horizontal Service Stepper */}
+                      <div className="flex items-start overflow-x-auto pb-1">
+                        {pipeline.steps.map((label, idx) => {
+                          const isDone =
+                            pipeline.current >= 0 && idx < pipeline.current;
+                          const isCurrent = idx === pipeline.current;
+                          const isLast = idx === pipeline.steps.length - 1;
+
+                          return (
                             <div
-                              key={`${log.stage}-${log.updatedAt}-${idx}`}
-                              className="rounded-xl bg-slate-50 px-3 py-2 text-xs"
+                              key={label}
+                              className={`flex items-start ${isLast ? "" : "flex-1"}`}
                             >
-                              <div className="flex items-center justify-between gap-2">
+                              <div className="flex w-20 shrink-0 flex-col items-center text-center">
                                 <span
-                                  className={`rounded-full px-2 py-0.5 text-[10px] font-bold ${
-                                    STAGE_BADGE[log.stage] ||
-                                    "bg-slate-200 text-slate-700"
+                                  className={`flex h-7 w-7 items-center justify-center rounded-full text-xs font-bold ${
+                                    isDone
+                                      ? "bg-emerald-600 text-white"
+                                      : isCurrent
+                                        ? "bg-orange-600 text-white ring-4 ring-orange-100"
+                                        : "bg-slate-200 text-slate-400"
                                   }`}
                                 >
-                                  {log.stage}
+                                  {isDone ? "✓" : idx + 1}
                                 </span>
-                                <span className="text-[10px] text-slate-400">
-                                  {formatTimeAgo(log.updatedAt)}
+                                <span
+                                  className={`mt-1.5 text-[11px] leading-tight ${
+                                    isCurrent
+                                      ? "font-bold text-[#13294b]"
+                                      : isDone
+                                        ? "font-semibold text-emerald-700"
+                                        : "text-slate-400"
+                                  }`}
+                                >
+                                  {label}
                                 </span>
                               </div>
-                              {log.note && (
-                                <p className="mt-1 text-[11px] text-slate-600">
-                                  {log.note}
-                                </p>
+                              {!isLast && (
+                                <span
+                                  className={`mt-3.5 h-0.5 min-w-4 flex-1 ${
+                                    isDone ? "bg-emerald-500" : "bg-slate-200"
+                                  }`}
+                                />
                               )}
                             </div>
-                          ))}
+                          );
+                        })}
                       </div>
-                    )}
+
+                      <div className="mt-4 flex flex-wrap items-center justify-between gap-2 border-t border-gray-100 pt-3.5 text-xs">
+                        <div className="text-slate-600">
+                          {activeBooking.invoice?.totalAmount !== undefined && (
+                            <span>
+                              {activeBooking.invoice.invoiceStage ===
+                              "Finalized"
+                                ? "Final Total: "
+                                : "Estimated Total: "}
+                              <strong className="text-sm text-[#13294b]">
+                                Rs.{" "}
+                                {Number(
+                                  activeBooking.invoice.totalAmount || 0,
+                                ).toLocaleString()}
+                              </strong>
+                              <span className="ml-1.5 text-slate-400">
+                                (
+                                {activeBooking.invoice.paymentStatus ||
+                                  "Unpaid"}
+                                )
+                              </span>
+                            </span>
+                          )}
+                        </div>
+                        <button
+                          type="button"
+                          onClick={() => setActiveTab("My Bookings")}
+                          className="font-bold text-orange-700 hover:underline"
+                        >
+                          View Full Details →
+                        </button>
+                      </div>
+                    </div>
                   </section>
-                </div>
-              </div>
+
+                  {/* Return Delivery Banner (When Workshop Service Completed & Driver is Returning Vehicle) */}
+                  {isReturningPhase && (
+                    <section className="flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-emerald-300 bg-emerald-50/70 px-5 py-4">
+                      <div>
+                        <h3 className="text-sm font-bold text-emerald-900">
+                          {activePickupStatus === "Out for Return Delivery"
+                            ? "Service Completed — Your Vehicle is On Its Way Back!"
+                            : "Service Completed — Preparing Return Delivery"}
+                        </h3>
+                        <p className="mt-0.5 text-xs text-emerald-800">
+                          {activePickupStatus === "Out for Return Delivery" &&
+                          activeDriver
+                            ? `Driver ${activeDriver.name} is returning your ${vehicleTitle} to your location. Track live on the map below.`
+                            : "Workshop service has finished. A driver will depart shortly to deliver your vehicle back to you."}
+                        </p>
+                      </div>
+                      {activeDriver?.contactNo && (
+                        <a
+                          href={`tel:${activeDriver.contactNo}`}
+                          className="rounded-xl bg-emerald-700 px-4 py-2 text-xs font-bold text-white transition hover:bg-emerald-800"
+                        >
+                          Call Driver
+                        </a>
+                      )}
+                    </section>
+                  )}
+
+                  {/* Workshop Inspection Notes & Additional Repairs Approval Card (Only during active workshop service) */}
+                  {isInWorkshopPhase &&
+                    activeBooking.service &&
+                    ((activeBooking.service.additionalWorks || []).length > 0 ||
+                      activeBooking.service.inspectionNotes) &&
+                    (() => {
+                      const srv = activeBooking.service;
+                      const inv = activeBooking.invoice || {};
+                      const works = Array.isArray(srv.additionalWorks)
+                        ? srv.additionalWorks
+                        : [];
+                      const pendingWorks = works.filter(
+                        (w) => w.status === "Pending Approval",
+                      );
+
+                      return (
+                        <section
+                          ref={approvalSectionRef}
+                          className={`rounded-2xl border p-5 shadow-2xs sm:p-6 ${
+                            pendingWorks.length > 0
+                              ? "border-amber-300 bg-amber-50/40"
+                              : "border-gray-200 bg-white"
+                          }`}
+                        >
+                          <div className="flex flex-wrap items-start justify-between gap-2">
+                            <div>
+                              <h3 className="text-sm font-bold text-[#13294b] sm:text-base">
+                                Workshop Inspection &amp; Additional Repairs
+                              </h3>
+                              <p className="mt-0.5 text-xs text-slate-500">
+                                Review extra issues or spare parts reported by
+                                our technicians and approve or reject each item.
+                              </p>
+                            </div>
+                            {pendingWorks.length > 0 && (
+                              <span className="rounded-full bg-amber-100 px-3 py-1 text-xs font-bold text-amber-900">
+                                Action Required ({pendingWorks.length})
+                              </span>
+                            )}
+                          </div>
+
+                          {srv.inspectionNotes && (
+                            <div className="mt-3 rounded-xl border border-slate-200 bg-white p-3 text-xs text-slate-700">
+                              <span className="font-bold text-[#13294b]">
+                                Technician Notes:{" "}
+                              </span>
+                              {srv.inspectionNotes}
+                            </div>
+                          )}
+
+                          {works.length > 0 && (
+                            <div className="mt-3.5 space-y-2.5">
+                              {works.map((item) => {
+                                const isPending =
+                                  item.status === "Pending Approval";
+                                const isBusy = respondingItemId === item._id;
+
+                                return (
+                                  <div
+                                    key={item._id}
+                                    className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-gray-200 bg-white p-3.5"
+                                  >
+                                    <div className="min-w-0 flex-1">
+                                      <div className="flex flex-wrap items-center gap-2">
+                                        <span className="text-xs font-bold text-[#13294b] sm:text-sm">
+                                          {item.title}
+                                        </span>
+                                        <span className="rounded bg-slate-100 px-1.5 py-0.5 text-[10px] font-semibold text-slate-600">
+                                          {item.category || "Repair"}
+                                        </span>
+                                        {!isPending && (
+                                          <span
+                                            className={`rounded-full px-2 py-0.5 text-[10px] font-bold ${
+                                              item.status === "Approved"
+                                                ? "bg-emerald-100 text-emerald-800"
+                                                : "bg-red-100 text-red-700"
+                                            }`}
+                                          >
+                                            {item.status === "Approved"
+                                              ? "✓ Approved"
+                                              : "✕ Rejected"}
+                                          </span>
+                                        )}
+                                      </div>
+                                      {item.description && (
+                                        <p className="mt-1 text-xs text-slate-500">
+                                          {item.description}
+                                        </p>
+                                      )}
+                                    </div>
+
+                                    <div className="flex flex-wrap items-center gap-3">
+                                      <span className="text-sm font-extrabold text-[#13294b]">
+                                        Rs.{" "}
+                                        {Number(
+                                          item.estimatedCost || 0,
+                                        ).toLocaleString()}
+                                      </span>
+
+                                      {isPending && (
+                                        <div className="flex items-center gap-2">
+                                          <button
+                                            type="button"
+                                            disabled={isBusy}
+                                            onClick={() =>
+                                              handleRespondAdditionalWork(
+                                                srv._id,
+                                                item._id,
+                                                "Approved",
+                                              )
+                                            }
+                                            className="rounded-lg bg-emerald-700 px-3 py-1.5 text-xs font-bold text-white transition hover:bg-emerald-800 disabled:opacity-50"
+                                          >
+                                            {isBusy ? "..." : "Approve ✓"}
+                                          </button>
+                                          <button
+                                            type="button"
+                                            disabled={isBusy}
+                                            onClick={() =>
+                                              handleRespondAdditionalWork(
+                                                srv._id,
+                                                item._id,
+                                                "Rejected",
+                                              )
+                                            }
+                                            className="rounded-lg border border-red-200 bg-white px-3 py-1.5 text-xs font-bold text-red-600 transition hover:bg-red-50 disabled:opacity-50"
+                                          >
+                                            Reject ✕
+                                          </button>
+                                        </div>
+                                      )}
+                                    </div>
+                                  </div>
+                                );
+                              })}
+                            </div>
+                          )}
+
+                          {inv.totalAmount !== undefined && (
+                            <div className="mt-4 flex flex-wrap items-center justify-between gap-2 rounded-xl bg-[#13294b] px-4 py-3 text-xs text-white">
+                              <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-slate-300">
+                                <span>
+                                  Package: Rs.{" "}
+                                  {Number(
+                                    inv.packageCharge || 0,
+                                  ).toLocaleString()}
+                                </span>
+                                {Number(inv.pickupDeliveryCharge || 0) > 0 && (
+                                  <span>
+                                    Pickup: Rs.{" "}
+                                    {Number(
+                                      inv.pickupDeliveryCharge || 0,
+                                    ).toLocaleString()}
+                                  </span>
+                                )}
+                                <span>
+                                  Approved Extras: Rs.{" "}
+                                  {Number(
+                                    inv.additionalWorkCharge || 0,
+                                  ).toLocaleString()}
+                                </span>
+                              </div>
+                              <span className="text-sm font-extrabold text-yellow-300">
+                                Total: Rs.{" "}
+                                {Number(inv.totalAmount || 0).toLocaleString()}
+                              </span>
+                            </div>
+                          )}
+                        </section>
+                      );
+                    })()}
+
+                  {/* Bottom 2-Column Section: Tracking Map + Context-Relevant Driver / Workshop Details */}
+                  <div className="grid grid-cols-1 gap-4 lg:grid-cols-3 lg:gap-5">
+                    {/* Live Route & Driver Tracking Map */}
+                    <section className="flex flex-col justify-between rounded-2xl border border-gray-200 bg-white p-4 shadow-2xs sm:p-5 lg:col-span-2">
+                      <div>
+                        <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+                          <div>
+                            <h3 className="text-sm font-bold text-[#13294b]">
+                              {isReturningPhase
+                                ? "Return Delivery Tracking"
+                                : isPickupPhase
+                                  ? "Pickup Driver Tracking"
+                                  : "Service Route & Workshop Location"}
+                            </h3>
+                            {driverTrackingConfig?.label && (
+                              <p className="text-xs font-medium text-emerald-700">
+                                {driverTrackingConfig.driverName} ·{" "}
+                                {driverTrackingConfig.label}
+                              </p>
+                            )}
+                          </div>
+                          {!driverTrackingConfig && (
+                            <button
+                              type="button"
+                              onClick={handleResetMap}
+                              className="rounded-lg border border-gray-200 bg-slate-50 px-2.5 py-1 text-[11px] font-semibold text-slate-600 transition hover:bg-slate-100"
+                            >
+                              Reset Route
+                            </button>
+                          )}
+                        </div>
+
+                        <div className="relative mx-auto w-full [&_input]:text-xs sm:[&_input]:text-sm [&_.smart-map-container]:gap-2.5! [&_.smart-map-container>div:nth-of-type(2)]:h-64!">
+                          <SmartMap
+                            resetTrigger={resetCount}
+                            shopCoords={[6.9271, 79.8612]}
+                            externalStartPoint={pickupMapCoords}
+                            driverTracking={driverTrackingConfig}
+                            readOnlyRoute={Boolean(driverTrackingConfig)}
+                            mode="routing"
+                            theme="light"
+                            showSearchBox={!driverTrackingConfig}
+                            showZoomControls={true}
+                            osrmUrl="https://router.project-osrm.org/route/v1/driving"
+                            onOrderReady={handleOrderReady}
+                          />
+                        </div>
+                      </div>
+
+                      <div className="mt-3 flex flex-wrap items-center justify-between gap-2 text-xs text-slate-500">
+                        <span>
+                          {routeCoords
+                            ? `Route (${routeCoords.startCoords[0].toFixed(4)}, ${routeCoords.startCoords[1].toFixed(4)})`
+                            : activeBooking.pickupLocation?.address
+                              ? `Address: ${activeBooking.pickupLocation.address}`
+                              : "Workshop Drop-off · Colombo"}
+                        </span>
+                        <span className="font-medium text-slate-700">
+                          Main Service Centre, Colombo
+                        </span>
+                      </div>
+                    </section>
+
+                    {/* Right Column: Relevant Driver Details (Pickup/Return) OR Workshop Bay & Updates */}
+                    <div className="space-y-4">
+                      {/* Show Driver Card whenever Pickup or Return Delivery is active */}
+                      {(isPickupPhase || isReturningPhase) && (
+                        <section className="rounded-2xl border border-gray-200 bg-white p-4 shadow-2xs sm:p-5">
+                          <h3 className="text-sm font-bold text-[#13294b]">
+                            {isReturningPhase
+                              ? "Return Delivery Driver"
+                              : "Pickup Driver Details"}
+                          </h3>
+
+                          {activeDriver ? (
+                            <div className="mt-3 space-y-3">
+                              <div className="flex items-center gap-3">
+                                {activeDriver.photograph ? (
+                                  <img
+                                    src={activeDriver.photograph}
+                                    alt={activeDriver.name}
+                                    className="h-12 w-12 shrink-0 rounded-full border border-gray-200 object-cover"
+                                  />
+                                ) : (
+                                  <div className="flex h-12 w-12 shrink-0 items-center justify-center rounded-full bg-[#13294b] text-sm font-bold text-white">
+                                    {(activeDriver.name || "D")
+                                      .charAt(0)
+                                      .toUpperCase()}
+                                  </div>
+                                )}
+                                <div className="min-w-0 flex-1">
+                                  <p className="truncate text-sm font-bold text-[#13294b]">
+                                    {activeDriver.name}
+                                  </p>
+                                  <p className="text-xs text-slate-500">
+                                    {activeDriver.contactNo}
+                                  </p>
+                                  {activeDriver.licenseNo && (
+                                    <p className="text-[11px] text-slate-400">
+                                      License: {activeDriver.licenseNo}
+                                    </p>
+                                  )}
+                                </div>
+                              </div>
+
+                              <dl className="space-y-1.5 rounded-xl bg-slate-50 p-3 text-xs">
+                                <div className="flex justify-between gap-2">
+                                  <dt className="text-slate-500">Trip Status</dt>
+                                  <dd className="font-bold text-[#13294b]">
+                                    {activePickupStatus || "Assigned"}
+                                  </dd>
+                                </div>
+                                {activePickup?.distance > 0 && (
+                                  <div className="flex justify-between gap-2">
+                                    <dt className="text-slate-500">Distance</dt>
+                                    <dd className="font-semibold text-slate-700">
+                                      {activePickup.distance} km
+                                    </dd>
+                                  </div>
+                                )}
+                                {activeBooking.pickupLocation?.address && (
+                                  <div className="border-t border-gray-200 pt-1.5 text-[11px] text-slate-600">
+                                    📍 {activeBooking.pickupLocation.address}
+                                  </div>
+                                )}
+                              </dl>
+
+                              {activeDriver.contactNo && (
+                                <a
+                                  href={`tel:${activeDriver.contactNo}`}
+                                  className="block w-full rounded-xl bg-[#13294b] py-2.5 text-center text-xs font-bold text-white transition hover:bg-[#1a3660]"
+                                >
+                                  Call Driver ({activeDriver.contactNo})
+                                </a>
+                              )}
+                            </div>
+                          ) : (
+                            <p className="mt-3 rounded-xl border border-dashed border-gray-200 p-4 text-center text-xs text-slate-500">
+                              A driver will be assigned shortly for your vehicle
+                              pickup.
+                            </p>
+                          )}
+                        </section>
+                      )}
+
+                      {/* Show Service Bay card during active workshop phase */}
+                      {isInWorkshopPhase && activeBay?.bayName && (
+                        <section className="rounded-2xl border border-gray-200 bg-white p-4 shadow-2xs sm:p-5">
+                          <h3 className="text-sm font-bold text-[#13294b]">
+                            Workshop Service Bay
+                          </h3>
+                          <div className="mt-3 rounded-xl bg-blue-50/70 p-3.5">
+                            <p className="text-sm font-bold text-[#13294b]">
+                              {activeBay.bayName}
+                            </p>
+                            <p className="mt-0.5 text-xs text-slate-600">
+                              {activeBay.bayType} Bay · Stage:{" "}
+                              <strong>{activeBooking.service?.status}</strong>
+                            </p>
+                          </div>
+                        </section>
+                      )}
+
+                      {/* Recent Workshop Updates (Only when logs exist) */}
+                      {activeLogs.length > 0 && (
+                        <section className="rounded-2xl border border-gray-200 bg-white p-4 shadow-2xs sm:p-5">
+                          <h3 className="text-sm font-bold text-[#13294b]">
+                            Recent Updates
+                          </h3>
+                          <div className="mt-3 space-y-2.5">
+                            {[...activeLogs]
+                              .reverse()
+                              .slice(0, 4)
+                              .map((log, idx) => (
+                                <div
+                                  key={`${log.stage}-${log.updatedAt}-${idx}`}
+                                  className="rounded-xl bg-slate-50 px-3 py-2 text-xs"
+                                >
+                                  <div className="flex items-center justify-between gap-2">
+                                    <span
+                                      className={`rounded-full px-2 py-0.5 text-[10px] font-bold ${
+                                        STAGE_BADGE[log.stage] ||
+                                        "bg-slate-200 text-slate-700"
+                                      }`}
+                                    >
+                                      {log.stage}
+                                    </span>
+                                    <span className="text-[10px] text-slate-400">
+                                      {formatTimeAgo(log.updatedAt)}
+                                    </span>
+                                  </div>
+                                  {log.note && (
+                                    <p className="mt-1 text-[11px] text-slate-600">
+                                      {log.note}
+                                    </p>
+                                  )}
+                                </div>
+                              ))}
+                          </div>
+                        </section>
+                      )}
+                    </div>
+                  </div>
+                </>
+              )}
             </>
           )}
         </div>

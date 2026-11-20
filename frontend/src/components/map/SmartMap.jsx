@@ -108,6 +108,30 @@ const userLocationPinIcon = L.divIcon({
   iconAnchor: [0, 0],
 });
 
+function createDriverCarIcon(label = "Driver On The Way", isReturning = false) {
+  const bg = isReturning ? "#059669" : "#13294b";
+  const ring = isReturning ? "rgba(5,150,105,0.3)" : "rgba(234,88,12,0.32)";
+  return L.divIcon({
+    className: "custom-driver-car-pin",
+    html: `
+      <div style="display:flex;flex-direction:column;align-items:center;transform:translate(-50%,-100%);">
+        <div style="background:${bg};color:#ffffff;border:2px solid #ffffff;border-radius:9999px;padding:3px 10px;font-size:10px;font-weight:800;white-space:nowrap;box-shadow:0 4px 10px rgba(0,0,0,0.35);margin-bottom:4px;">
+          ${label}
+        </div>
+        <div style="width:32px;height:32px;border-radius:50%;background:${bg};border:2.5px solid #ffffff;box-shadow:0 0 0 6px ${ring},0 3px 10px rgba(0,0,0,0.35);display:flex;align-items:center;justify-content:center;">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#ffffff" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M5 17h14v-5l-2-5H7l-2 5v5z"></path>
+            <circle cx="7.5" cy="17.5" r="1.5" fill="#ffffff"></circle>
+            <circle cx="16.5" cy="17.5" r="1.5" fill="#ffffff"></circle>
+          </svg>
+        </div>
+      </div>
+    `,
+    iconSize: [0, 0],
+    iconAnchor: [0, 0],
+  });
+}
+
 function getDistanceSq(c1, c2) {
   const dLat = c1[0] - c2[0];
   const dLng = c1[1] - c2[1];
@@ -175,6 +199,8 @@ export function SmartMap({
   center = [6.9271, 79.8612],
   userLocation = null,
   externalStartPoint = null,
+  driverTracking = null,
+  readOnlyRoute = false,
   showZoomControls = true,
   interactiveMap = true,
   showSearchBox = true,
@@ -192,6 +218,7 @@ export function SmartMap({
     workshopList[0]?.coordinates || shopCoords,
   );
   const [routePath, setRoutePath] = useState([]);
+  const [driverStepProgress, setDriverStepProgress] = useState(0);
   const [errorMessage, setErrorMessage] = useState(null);
   const [isCalculating, setIsCalculating] = useState(false);
   const [searchQuery, setSearchQuery] = useState("");
@@ -441,6 +468,46 @@ export function SmartMap({
       ? []
       : routePath;
 
+  const isDriverMoving = Boolean(
+    driverTracking?.active && displayedRoutePath.length > 1,
+  );
+
+  // Smoothly animate driver vehicle marker along the OSRM route when active
+  useEffect(() => {
+    if (!isDriverMoving) return undefined;
+
+    const timer = window.setInterval(() => {
+      setDriverStepProgress((prev) => (prev >= 100 ? 0 : prev + 2));
+    }, 350);
+
+    return () => window.clearInterval(timer);
+  }, [isDriverMoving]);
+
+  const activeDriverMarkerPos = (() => {
+    if (!driverTracking?.active) return null;
+    if (displayedRoutePath.length > 1) {
+      const ratio = driverStepProgress / 100;
+      const forwardIdx = Math.min(
+        displayedRoutePath.length - 1,
+        Math.floor(ratio * (displayedRoutePath.length - 1)),
+      );
+      const isToCustomer =
+        driverTracking.direction === "to-customer" ||
+        driverTracking.direction === "returning";
+      const idx = isToCustomer
+        ? displayedRoutePath.length - 1 - forwardIdx
+        : forwardIdx;
+      return displayedRoutePath[idx];
+    }
+    if (
+      Array.isArray(driverTracking.coords) &&
+      driverTracking.coords.length === 2
+    ) {
+      return driverTracking.coords;
+    }
+    return null;
+  })();
+
   const displayedSearchResults =
     searchQuery.trim().length < 3 ? [] : searchResults;
 
@@ -649,12 +716,14 @@ export function SmartMap({
 
           {mode !== "shop-location" && (
             <>
-              <MapClickHandler
-                setStartPoint={setStartPoint}
-                setEndPoint={setEndPoint}
-                mode={mode}
-                workshopList={workshopList}
-              />
+              {!readOnlyRoute && (
+                <MapClickHandler
+                  setStartPoint={setStartPoint}
+                  setEndPoint={setEndPoint}
+                  mode={mode}
+                  workshopList={workshopList}
+                />
+              )}
 
               {Array.isArray(activeUserLocation) &&
                 activeUserLocation.length === 2 && (
@@ -662,38 +731,64 @@ export function SmartMap({
                     position={activeUserLocation}
                     icon={userLocationPinIcon}
                     zIndexOffset={1000}
-                    eventHandlers={{
-                      click: () => {
-                        setStartPoint(activeUserLocation);
-                        const nearest = getNearestWorkshop(
-                          activeUserLocation,
-                          workshopList,
-                        );
-                        if (nearest) {
-                          setEndPoint(nearest.coordinates);
-                        }
-                      },
-                    }}
+                    eventHandlers={
+                      readOnlyRoute
+                        ? undefined
+                        : {
+                            click: () => {
+                              setStartPoint(activeUserLocation);
+                              const nearest = getNearestWorkshop(
+                                activeUserLocation,
+                                workshopList,
+                              );
+                              if (nearest) {
+                                setEndPoint(nearest.coordinates);
+                              }
+                            },
+                          }
+                    }
                   >
                     <Popup>
-                      Your Live Location (Click to select as pickup)
+                      {readOnlyRoute
+                        ? "Your Location"
+                        : "Your Live Location (Click to select as pickup)"}
                     </Popup>
                   </Marker>
                 )}
 
               {startPoint && (
                 <Marker position={startPoint} icon={pickupPinIcon}>
-                  <Popup>Customer Pickup Location</Popup>
+                  <Popup>Customer Pickup / Return Location</Popup>
                 </Marker>
               )}
 
               {displayedRoutePath.length > 0 && (
                 <Polyline
                   positions={displayedRoutePath}
-                  color="#ea580c"
+                  color={
+                    driverTracking?.direction === "returning"
+                      ? "#059669"
+                      : "#ea580c"
+                  }
                   weight={5}
                   opacity={0.85}
                 />
+              )}
+
+              {activeDriverMarkerPos && (
+                <Marker
+                  position={activeDriverMarkerPos}
+                  icon={createDriverCarIcon(
+                    driverTracking?.label || "Driver On The Way",
+                    driverTracking?.direction === "returning",
+                  )}
+                  zIndexOffset={1500}
+                >
+                  <Popup>
+                    <strong>{driverTracking?.driverName || "Driver"}</strong>
+                    {driverTracking?.label ? ` — ${driverTracking.label}` : ""}
+                  </Popup>
+                </Marker>
               )}
             </>
           )}

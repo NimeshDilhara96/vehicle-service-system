@@ -522,7 +522,7 @@ exports.getMyBookings = async (req, res, next) => {
         appointmentId: { $in: appointmentIds },
         customerId: req.user._id,
       })
-        .populate("driverId", "name contactNo")
+        .populate("driverId", "name contactNo licenseNo photograph")
         .lean(),
     ]);
 

@@ -160,6 +160,7 @@ function Booking({ initialTab = "new", onNavigateToVehicles, onBookingsChange })
   const [successMsg, setSuccessMsg] = useState("");
 
   // Booking Details Popup Modal State (My Bookings)
+  const [bookingListFilter, setBookingListFilter] = useState("all"); // 'all' | 'active' | 'history'
   const [selectedBookingId, setSelectedBookingId] = useState(null);
   const [respondingItemId, setRespondingItemId] = useState(null);
   const [refreshingList, setRefreshingList] = useState(false);
@@ -1106,34 +1107,89 @@ function Booking({ initialTab = "new", onNavigateToVehicles, onBookingsChange })
           </form>
         )
       ) : (
-        /* My Bookings List — Clickable Bars + Full Vehicle & Service Details Popup */
-        <div className="space-y-3">
-          <div className="flex flex-wrap items-center justify-between gap-2">
-            <p className="text-xs text-slate-500">
-              Click any booking to inspect complete vehicle details, live
-              workshop status, and approve additional repairs.
-            </p>
-            <button
-              type="button"
-              disabled={refreshingList}
-              onClick={handleRefreshBookings}
-              className="rounded-lg border border-gray-300 bg-white px-3 py-1.5 text-xs font-semibold text-[#13294b] transition hover:bg-slate-50 disabled:opacity-50"
-            >
-              {refreshingList ? "Refreshing..." : "↻ Refresh"}
-            </button>
-          </div>
+        /* My Bookings List — Active / History Filter + Clickable Bars + Full Details Popup */
+        (() => {
+          const isBookingCurrentlyActive = (b) => {
+            if (!b || b.status === "Cancelled") return false;
+            if (b.requiresPickup) {
+              const pStatus = b.pickupDelivery?.pickupStatus || "";
+              if (pStatus === "Delivered to Customer") return false;
+              if (b.status === "Completed" && !b.pickupDelivery) return false;
+              return true;
+            }
+            return b.status !== "Completed" && b.service?.status !== "Completed";
+          };
 
-          {bookings.length === 0 ? (
-            <div className="rounded-2xl border border-dashed border-gray-300 bg-white p-10 text-center shadow-2xs">
-              <p className="text-sm font-semibold text-[#13294b]">
-                No appointments booked yet
-              </p>
-              <p className="mt-1 text-xs text-slate-500">
-                Create a new booking to schedule maintenance for your vehicle.
-              </p>
-            </div>
-          ) : (
-            bookings.map((app) => {
+          const activeBookings = bookings.filter(isBookingCurrentlyActive);
+          const historyBookings = bookings.filter(
+            (b) => !isBookingCurrentlyActive(b),
+          );
+          const filteredBookings =
+            bookingListFilter === "active"
+              ? activeBookings
+              : bookingListFilter === "history"
+                ? historyBookings
+                : bookings;
+
+          return (
+            <div className="space-y-3">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <div className="flex items-center gap-1.5 rounded-xl border border-gray-200 bg-white p-1">
+                  {[
+                    { id: "all", label: "All", count: bookings.length },
+                    {
+                      id: "active",
+                      label: "Active",
+                      count: activeBookings.length,
+                    },
+                    {
+                      id: "history",
+                      label: "History",
+                      count: historyBookings.length,
+                    },
+                  ].map((f) => (
+                    <button
+                      key={f.id}
+                      type="button"
+                      onClick={() => setBookingListFilter(f.id)}
+                      className={`rounded-lg px-3 py-1 text-xs font-bold transition ${
+                        bookingListFilter === f.id
+                          ? "bg-[#13294b] text-white"
+                          : "text-slate-600 hover:bg-slate-100"
+                      }`}
+                    >
+                      {f.label} ({f.count})
+                    </button>
+                  ))}
+                </div>
+
+                <button
+                  type="button"
+                  disabled={refreshingList}
+                  onClick={handleRefreshBookings}
+                  className="rounded-lg border border-gray-300 bg-white px-3 py-1.5 text-xs font-semibold text-[#13294b] transition hover:bg-slate-50 disabled:opacity-50"
+                >
+                  {refreshingList ? "Refreshing..." : "↻ Refresh"}
+                </button>
+              </div>
+
+              {filteredBookings.length === 0 ? (
+                <div className="rounded-2xl border border-dashed border-gray-300 bg-white p-10 text-center shadow-2xs">
+                  <p className="text-sm font-semibold text-[#13294b]">
+                    {bookingListFilter === "active"
+                      ? "No active bookings right now"
+                      : bookingListFilter === "history"
+                        ? "No completed service history yet"
+                        : "No appointments booked yet"}
+                  </p>
+                  <p className="mt-1 text-xs text-slate-500">
+                    {bookingListFilter === "history"
+                      ? "Completed and delivered services will appear here."
+                      : "Create a new booking to schedule maintenance for your vehicle."}
+                  </p>
+                </div>
+              ) : (
+                filteredBookings.map((app) => {
               const vSnap = app.vehicleSnapshot || {};
               const srv = app.service || null;
               const bay = srv?.bayId || null;
@@ -1335,6 +1391,8 @@ function Booking({ initialTab = "new", onNavigateToVehicles, onBookingsChange })
             })
           )}
         </div>
+          );
+        })()
       )}
 
       {/* Complete Vehicle & Live Service Status Popup Modal (Service Bay Style) */}
