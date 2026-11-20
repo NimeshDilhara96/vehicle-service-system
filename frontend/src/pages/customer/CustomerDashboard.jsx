@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { SmartMap } from "../../components/map/SmartMap";
 import { useAuth } from "../../context/AuthContext";
@@ -8,122 +8,240 @@ import Vehicle from "./Vehicle";
 import Booking from "./Booking";
 import Profile from "./Profile";
 
-const navItems = [
-  { label: "Dashboard" },
-  { label: "My Vehicles" },
-  { label: "My Bookings" },
-  { label: "Track Vehicle" },
-  { label: "Invoices" },
-  { label: "Feedback" },
-  { label: "Profile" },
+const NAV_ITEMS = [
+  { id: "Dashboard", label: "Dashboard" },
+  { id: "My Vehicles", label: "My Vehicles" },
+  { id: "My Bookings", label: "My Bookings" },
+  { id: "Book a Service", label: "Book a Service" },
+  { id: "Profile", label: "Profile" },
 ];
 
-const STEP_LABELS = [
-  "Inspection",
-  "Waiting for Approval",
-  "In Progress",
-  "Waiting for Parts",
-  "Completed",
-];
+const STAGE_BADGE = {
+  "Vehicle Received": "bg-slate-100 text-slate-700",
+  Inspection: "bg-sky-100 text-sky-800",
+  "Waiting for Approval": "bg-amber-100 text-amber-900",
+  "In Progress": "bg-blue-100 text-blue-800",
+  "Waiting for Parts": "bg-purple-100 text-purple-800",
+  Completed: "bg-emerald-100 text-emerald-800",
+  Confirmed: "bg-blue-50 text-blue-700",
+  Pending: "bg-amber-50 text-amber-800",
+  Cancelled: "bg-red-50 text-red-600",
+};
 
-function buildProgressFromBooking(booking) {
+const READ_NOTIF_STORAGE_KEY = "vss_customer_read_notifications_v1";
+
+function loadReadNotificationIds() {
+  try {
+    const raw = window.localStorage.getItem(READ_NOTIF_STORAGE_KEY);
+    if (!raw) return new Set();
+    const arr = JSON.parse(raw);
+    return Array.isArray(arr) ? new Set(arr) : new Set();
+  } catch {
+    return new Set();
+  }
+}
+
+function saveReadNotificationIds(idSet) {
+  try {
+    const arr = Array.from(idSet).slice(-150);
+    window.localStorage.setItem(READ_NOTIF_STORAGE_KEY, JSON.stringify(arr));
+  } catch {
+    // Ignore storage quota errors
+  }
+}
+
+function formatTimeAgo(val) {
+  if (!val) return "";
+  try {
+    const diffMs = Date.now() - new Date(val).getTime();
+    const mins = Math.floor(diffMs / 60000);
+    if (mins < 1) return "Just now";
+    if (mins < 60) return `${mins}m ago`;
+    const hrs = Math.floor(mins / 60);
+    if (hrs < 24) return `${hrs}h ago`;
+    return new Date(val).toLocaleDateString("en-GB", {
+      day: "2-digit",
+      month: "short",
+    });
+  } catch {
+    return "";
+  }
+}
+
+function buildBookingPipeline(booking) {
   if (!booking || booking.status === "Cancelled") {
     return {
-      currentStepIndex: -1,
+      steps: ["Booked", "Vehicle Check", "In Progress", "Approval", "Completed"],
+      current: -1,
       badgeText:
-        booking?.status === "Cancelled" ? "Cancelled" : "No Active Booking",
-      steps: STEP_LABELS.map((label) => ({ label, status: "upcoming" })),
+        booking?.status === "Cancelled" ? "Cancelled" : "No Active Service",
     };
   }
 
-  // If a detailed Workshop Service record exists, map its stage
-  let activeIndex = -1;
-  if (booking.service?.status) {
-    if (booking.service.status === "Vehicle Received") {
-      activeIndex = 0; // Legacy maps to Inspection
-    } else {
-      activeIndex = STEP_LABELS.indexOf(booking.service.status);
+  const isPickup = Boolean(booking.requiresPickup);
+  const steps = isPickup
+    ? [
+        "Booked",
+        "Driver Pickup",
+        "Vehicle Check",
+        "In Progress",
+        "Approval",
+        "Completed",
+      ]
+    : ["Booked", "Vehicle Check", "In Progress", "Approval", "Completed"];
+
+  const lastIdx = steps.length - 1;
+  const offset = isPickup ? 1 : 0;
+  const srvStatus = booking.service?.status || "";
+  const works = Array.isArray(booking.service?.additionalWorks)
+    ? booking.service.additionalWorks
+    : [];
+  const hasPending = works.some((w) => w.status === "Pending Approval");
+  const hasResponded = works.some(
+    (w) => w.status === "Approved" || w.status === "Rejected",
+  );
+
+  let current = 0;
+  if (booking.status === "Completed" || srvStatus === "Completed") {
+    current = lastIdx;
+  } else if (srvStatus === "Waiting for Approval" || hasPending) {
+    current = 3 + offset;
+  } else if (srvStatus === "In Progress" || srvStatus === "Waiting for Parts") {
+    current = hasResponded ? 3 + offset : 2 + offset;
+  } else if (
+    srvStatus === "Inspection" ||
+    srvStatus === "Vehicle Received" ||
+    booking.status === "In Progress"
+  ) {
+    current = 1 + offset;
+  } else if (isPickup) {
+    const pStatus = booking.pickupDelivery?.pickupStatus || "";
+    if (
+      pStatus === "Driver Assigned" ||
+      pStatus === "En Route to Pickup" ||
+      pStatus === "Vehicle Picked Up" ||
+      pStatus === "Delivered to Workshop"
+    ) {
+      current = 1;
     }
   }
 
-  // Otherwise derive step progress from Appointment status
-  if (activeIndex === -1) {
-    switch (booking.status) {
-      case "Pending":
-      case "Confirmed":
-        activeIndex = 0; // Inspection scheduled
-        break;
-      case "In Progress":
-        activeIndex = 2; // In Progress
-        break;
-      case "Completed":
-        activeIndex = 4; // Completed
-        break;
-      default:
-        activeIndex = 0;
+  const badgeText = srvStatus || booking.status;
+  return { steps, current, badgeText };
+}
+
+function deriveNotificationsFromBookings(bookings) {
+  const items = [];
+
+  for (const app of bookings) {
+    const plate = app.vehicleSnapshot?.registrationNo || "Vehicle";
+    const srv = app.service || null;
+    const pickup = app.pickupDelivery || null;
+
+    // 1. Pending additional work approvals (highest priority)
+    if (srv && Array.isArray(srv.additionalWorks)) {
+      for (const work of srv.additionalWorks) {
+        if (work.status === "Pending Approval") {
+          items.push({
+            id: `approval-${srv._id}-${work._id}`,
+            type: "approval",
+            title: `Approval needed · ${plate}`,
+            body: `${work.title} (Rs. ${Number(work.estimatedCost || 0).toLocaleString()})`,
+            timestamp: work.addedAt || srv.updatedAt || app.updatedAt,
+            bookingId: app._id,
+          });
+        }
+      }
+    }
+
+    // 2. Workshop stage logs
+    if (srv && Array.isArray(srv.statusLogs)) {
+      for (let i = 0; i < srv.statusLogs.length; i += 1) {
+        const log = srv.statusLogs[i];
+        items.push({
+          id: `srvlog-${srv._id}-${log.stage}-${log.updatedAt || i}`,
+          type: log.stage === "Completed" ? "success" : "workshop",
+          title: `${plate} · ${log.stage}`,
+          body: log.note || `Vehicle moved to ${log.stage}`,
+          timestamp: log.updatedAt || srv.updatedAt,
+          bookingId: app._id,
+        });
+      }
+    }
+
+    // 3. Pickup & delivery logs
+    if (pickup && Array.isArray(pickup.statusLogs)) {
+      for (let i = 0; i < pickup.statusLogs.length; i += 1) {
+        const log = pickup.statusLogs[i];
+        items.push({
+          id: `pickuplog-${pickup._id}-${log.status}-${log.timestamp || i}`,
+          type: "pickup",
+          title: `${plate} · ${log.status}`,
+          body: log.note || `Pickup status updated to ${log.status}`,
+          timestamp: log.timestamp || pickup.updatedAt,
+          bookingId: app._id,
+        });
+      }
     }
   }
 
-  const isFullyCompleted = booking.status === "Completed";
-
-  const steps = STEP_LABELS.map((label, idx) => {
-    if (isFullyCompleted || idx < activeIndex) {
-      return { label, status: "done" };
-    }
-    if (idx === activeIndex) {
-      return { label, status: "current" };
-    }
-    return { label, status: "upcoming" };
+  // Sort newest first, keeping pending approvals at the very top
+  items.sort((a, b) => {
+    if (a.type === "approval" && b.type !== "approval") return -1;
+    if (b.type === "approval" && a.type !== "approval") return 1;
+    return new Date(b.timestamp || 0) - new Date(a.timestamp || 0);
   });
 
-  const badgeText = booking.service?.status
-    ? booking.service.status
-    : booking.status === "Pending"
-      ? "Booking Pending"
-      : booking.status === "Confirmed"
-        ? "Booking Confirmed"
-        : STEP_LABELS[activeIndex];
-
-  return {
-    currentStepIndex: activeIndex,
-    badgeText,
-    steps,
-  };
+  return items.slice(0, 25);
 }
 
 function CustomerDashboard() {
   const [activeTab, setActiveTab] = useState("Dashboard");
   const [vehicles, setVehicles] = useState([]);
   const [bookings, setBookings] = useState([]);
-  const [apiMessage, setApiMessage] = useState("");
   const [routeCoords, setRouteCoords] = useState(null);
   const [resetCount, setResetCount] = useState(0);
-  const [refreshCount, setRefreshCount] = useState(0);
   const [respondingItemId, setRespondingItemId] = useState(null);
   const [approvalFeedback, setApprovalFeedback] = useState({
     type: "",
     text: "",
   });
+
+  // Notifications dropdown & read state
+  const [notifOpen, setNotifOpen] = useState(false);
+  const [readIds, setReadIds] = useState(() => loadReadNotificationIds());
+  const notifRef = useRef(null);
+  const approvalSectionRef = useRef(null);
+
   const { user, logout } = useAuth();
   const navigate = useNavigate();
 
+  // Initial load + silent real-time sync every 5 seconds while tab is visible
   useEffect(() => {
     let isMounted = true;
-    const controller = new AbortController();
+    let activeController = null;
 
-    api
-      .get("/auth/user-dashboard", { signal: controller.signal })
-      .then((res) => {
+    const fetchLiveBookings = async () => {
+      if (document.visibilityState !== "visible") return;
+      if (activeController) activeController.abort();
+      const controller = new AbortController();
+      activeController = controller;
+
+      try {
+        const res = await api.get("/appointments", {
+          signal: controller.signal,
+        });
         if (isMounted && res.data.success) {
-          setApiMessage(res.data.message);
+          setBookings(res.data.appointments || []);
         }
-      })
-      .catch(() => {
-        if (isMounted) setApiMessage("Error fetching user dashboard");
-      });
+      } catch {
+        // Ignore transient network or abort errors
+      }
+    };
 
+    const initController = new AbortController();
     api
-      .get("/vehicles", { signal: controller.signal })
+      .get("/vehicles", { signal: initController.signal })
       .then((res) => {
         if (isMounted && res.data.success) {
           setVehicles(res.data.vehicles || []);
@@ -131,20 +249,54 @@ function CustomerDashboard() {
       })
       .catch(() => {});
 
-    api
-      .get("/appointments", { signal: controller.signal })
-      .then((res) => {
-        if (isMounted && res.data.success) {
-          setBookings(res.data.appointments || []);
-        }
-      })
-      .catch(() => {});
+    fetchLiveBookings();
+
+    const intervalId = window.setInterval(fetchLiveBookings, 5000);
+    const handleFocusOrVisible = () => {
+      if (document.visibilityState === "visible") {
+        fetchLiveBookings();
+      }
+    };
+
+    window.addEventListener("focus", handleFocusOrVisible);
+    document.addEventListener("visibilitychange", handleFocusOrVisible);
 
     return () => {
       isMounted = false;
-      controller.abort();
+      window.clearInterval(intervalId);
+      window.removeEventListener("focus", handleFocusOrVisible);
+      document.removeEventListener("visibilitychange", handleFocusOrVisible);
+      initController.abort();
+      if (activeController) activeController.abort();
     };
-  }, [refreshCount]);
+  }, []);
+
+  // Close notification popover on outside click
+  useEffect(() => {
+    if (!notifOpen) return undefined;
+    const handleOutsideClick = (e) => {
+      if (notifRef.current && !notifRef.current.contains(e.target)) {
+        setNotifOpen(false);
+      }
+    };
+    document.addEventListener("mousedown", handleOutsideClick);
+    return () => document.removeEventListener("mousedown", handleOutsideClick);
+  }, [notifOpen]);
+
+  const handleLogout = async () => {
+    await logout();
+    navigate("/login");
+  };
+
+  const handleOrderReady = useCallback((data) => {
+    setRouteCoords(data);
+  }, []);
+
+  const handleResetMap = (e) => {
+    e.stopPropagation();
+    setResetCount((prev) => prev + 1);
+    setRouteCoords(null);
+  };
 
   const handleRespondAdditionalWork = async (serviceId, itemId, decision) => {
     setRespondingItemId(itemId);
@@ -162,7 +314,9 @@ function CustomerDashboard() {
             b.service?._id === serviceId
               ? {
                   ...b,
-                  service: res.data.service || b.service,
+                  service: res.data.service
+                    ? { ...res.data.service, bayId: b.service?.bayId }
+                    : b.service,
                   invoice: res.data.invoice || b.invoice,
                 }
               : b,
@@ -187,35 +341,88 @@ function CustomerDashboard() {
     }
   };
 
-  const handleLogout = async () => {
-    await logout();
-    navigate("/login");
+  const notifications = useMemo(
+    () => deriveNotificationsFromBookings(bookings),
+    [bookings],
+  );
+
+  const unreadCount = useMemo(
+    () => notifications.filter((n) => !readIds.has(n.id)).length,
+    [notifications, readIds],
+  );
+
+  const markAllNotificationsRead = () => {
+    const next = new Set(readIds);
+    for (const n of notifications) {
+      next.add(n.id);
+    }
+    setReadIds(next);
+    saveReadNotificationIds(next);
   };
 
-  const handleOrderReady = useCallback((data) => {
-    setRouteCoords(data);
-  }, []);
+  const handleNotificationClick = (notif) => {
+    const next = new Set(readIds);
+    next.add(notif.id);
+    setReadIds(next);
+    saveReadNotificationIds(next);
+    setNotifOpen(false);
 
-  const handleResetMap = (e) => {
-    e.stopPropagation();
-    setResetCount((prev) => prev + 1);
-    setRouteCoords(null);
+    if (notif.type === "approval") {
+      setActiveTab("Dashboard");
+      window.setTimeout(() => {
+        approvalSectionRef.current?.scrollIntoView({
+          behavior: "smooth",
+          block: "center",
+        });
+      }, 100);
+    } else {
+      setActiveTab("My Bookings");
+    }
   };
 
-  const displayName = user?.name || "John";
+  const displayName = user?.name || "Customer";
 
-  // Pick the most recent non-cancelled booking (or latest booking)
-  const activeBooking =
-    bookings.find((b) => b.status !== "Cancelled") || bookings[0] || null;
+  // Pick the most relevant active booking (In Progress / Confirmed first, else most recent non-cancelled)
+  const activeBooking = useMemo(() => {
+    return (
+      bookings.find((b) => b.status === "In Progress") ||
+      bookings.find((b) => b.status === "Confirmed" || b.status === "Pending") ||
+      bookings.find((b) => b.status !== "Cancelled") ||
+      bookings[0] ||
+      null
+    );
+  }, [bookings]);
 
-  const primaryVehicle = vehicles[0];
-  const bookedVehicleSnapshot = activeBooking?.vehicleSnapshot;
+  const stats = useMemo(() => {
+    let activeCount = 0;
+    let pendingApprovals = 0;
 
-  const vehicleHeaderLabel = bookedVehicleSnapshot
-    ? `${[bookedVehicleSnapshot.brand, bookedVehicleSnapshot.modelName].filter(Boolean).join(" ") || bookedVehicleSnapshot.vehicleType} · ${bookedVehicleSnapshot.registrationNo}`
-    : primaryVehicle
-      ? `${[primaryVehicle.brand, primaryVehicle.modelName].filter(Boolean).join(" ") || primaryVehicle.vehicleType} · ${primaryVehicle.registrationNo}`
+    for (const b of bookings) {
+      if (b.status !== "Completed" && b.status !== "Cancelled") {
+        activeCount += 1;
+      }
+      const works = Array.isArray(b.service?.additionalWorks)
+        ? b.service.additionalWorks
+        : [];
+      for (const w of works) {
+        if (w.status === "Pending Approval") pendingApprovals += 1;
+      }
+    }
+
+    return { activeCount, pendingApprovals };
+  }, [bookings]);
+
+  const vSnap = activeBooking?.vehicleSnapshot || null;
+  const vehicleTitle = vSnap
+    ? [vSnap.brand, vSnap.modelName].filter(Boolean).join(" ") ||
+      vSnap.vehicleType
+    : vehicles[0]
+      ? [vehicles[0].brand, vehicles[0].modelName].filter(Boolean).join(" ") ||
+        vehicles[0].vehicleType
       : "No Vehicle Registered";
+
+  const plateNo =
+    vSnap?.registrationNo || vehicles[0]?.registrationNo || null;
 
   const formattedBookingDate = activeBooking?.serviceDate
     ? new Date(activeBooking.serviceDate).toLocaleDateString("en-GB", {
@@ -223,13 +430,125 @@ function CustomerDashboard() {
         month: "short",
         year: "numeric",
       })
-    : null;
+    : "";
 
   const packageName =
     activeBooking?.packageId?.packageName || "Service Package";
 
-  const { currentStepIndex, badgeText, steps: serviceSteps } =
-    buildProgressFromBooking(activeBooking);
+  const pipeline = useMemo(
+    () => buildBookingPipeline(activeBooking),
+    [activeBooking],
+  );
+
+  const activeDriver = activeBooking?.pickupDelivery?.driverId || null;
+  const activeBay = activeBooking?.service?.bayId || null;
+  const activeLogs = Array.isArray(activeBooking?.service?.statusLogs)
+    ? activeBooking.service.statusLogs
+    : [];
+
+  const pickupMapCoords =
+    Array.isArray(activeBooking?.pickupLocation?.coordinates) &&
+    activeBooking.pickupLocation.coordinates.length === 2
+      ? activeBooking.pickupLocation.coordinates
+      : null;
+
+  const notificationBellControl = (
+    <div ref={notifRef} className="relative">
+      <button
+        type="button"
+        onClick={() => setNotifOpen((prev) => !prev)}
+        aria-label="Notifications"
+        className="relative flex h-9 w-9 items-center justify-center rounded-xl border border-gray-200 bg-white text-[#13294b] shadow-2xs transition hover:border-orange-300 hover:bg-orange-50/40"
+      >
+        <svg
+          xmlns="http://www.w3.org/2000/svg"
+          fill="none"
+          viewBox="0 0 24 24"
+          strokeWidth={1.9}
+          stroke="currentColor"
+          className="h-5 w-5"
+        >
+          <path
+            strokeLinecap="round"
+            strokeLinejoin="round"
+            d="M14.857 17.082a23.848 23.848 0 0 0 5.454-1.31A8.967 8.967 0 0 1 18 9.75V9A6 6 0 0 0 6 9v.75a8.967 8.967 0 0 1-2.312 6.022c1.733.64 3.56 1.085 5.455 1.31m5.714 0a24.255 24.255 0 0 1-5.714 0m5.714 0a3 3 0 1 1-5.714 0"
+          />
+        </svg>
+        {unreadCount > 0 && (
+          <span className="absolute -top-1 -right-1 flex h-5 min-w-5 items-center justify-center rounded-full bg-orange-600 px-1 text-[10px] font-extrabold text-white ring-2 ring-white">
+            {unreadCount > 9 ? "9+" : unreadCount}
+          </span>
+        )}
+      </button>
+
+      {notifOpen && (
+        <div className="absolute right-0 z-50 mt-2 w-80 overflow-hidden rounded-2xl border border-gray-200 bg-white shadow-xl sm:w-96">
+          <div className="flex items-center justify-between border-b border-gray-100 px-4 py-3">
+            <h3 className="text-xs font-bold text-[#13294b]">
+              Notifications {unreadCount > 0 ? `(${unreadCount})` : ""}
+            </h3>
+            {unreadCount > 0 && (
+              <button
+                type="button"
+                onClick={markAllNotificationsRead}
+                className="text-[11px] font-semibold text-orange-700 hover:underline"
+              >
+                Mark all read
+              </button>
+            )}
+          </div>
+
+          <div className="max-h-80 divide-y divide-gray-100 overflow-y-auto">
+            {notifications.length === 0 ? (
+              <p className="px-4 py-8 text-center text-xs text-slate-400">
+                No notifications yet. Updates on your vehicle service and
+                approvals will appear here.
+              </p>
+            ) : (
+              notifications.map((n) => {
+                const isUnread = !readIds.has(n.id);
+                return (
+                  <button
+                    key={n.id}
+                    type="button"
+                    onClick={() => handleNotificationClick(n)}
+                    className={`flex w-full items-start gap-3 px-4 py-3 text-left transition hover:bg-slate-50 ${
+                      isUnread ? "bg-orange-50/40" : "bg-white"
+                    }`}
+                  >
+                    <span
+                      className={`mt-1.5 h-2 w-2 shrink-0 rounded-full ${
+                        n.type === "approval"
+                          ? "bg-amber-500"
+                          : n.type === "success"
+                            ? "bg-emerald-500"
+                            : isUnread
+                              ? "bg-orange-600"
+                              : "bg-slate-300"
+                      }`}
+                    />
+                    <div className="min-w-0 flex-1">
+                      <div className="flex items-center justify-between gap-2">
+                        <p className="truncate text-xs font-bold text-[#13294b]">
+                          {n.title}
+                        </p>
+                        <span className="shrink-0 text-[10px] text-slate-400">
+                          {formatTimeAgo(n.timestamp)}
+                        </span>
+                      </div>
+                      <p className="mt-0.5 line-clamp-2 text-[11px] text-slate-600">
+                        {n.body}
+                      </p>
+                    </div>
+                  </button>
+                );
+              })
+            )}
+          </div>
+        </div>
+      )}
+    </div>
+  );
 
   return (
     <div className="flex min-h-screen flex-col bg-[#f8f9fa] lg:flex-row">
@@ -240,37 +559,46 @@ function CustomerDashboard() {
             <span className="text-base font-bold tracking-tight">
               Vehicle Service
             </span>
-            <p className="mt-0.5 text-[11px] font-medium text-white/60">
+            <p className="mt-0.5 text-[11px] font-medium text-orange-300">
               Customer Portal
             </p>
           </div>
 
           <nav className="space-y-1 px-3">
-            {navItems.map((item) => {
-              const isActive = activeTab === item.label;
+            {NAV_ITEMS.map((item) => {
+              const isActive = activeTab === item.id;
               return (
                 <button
-                  key={item.label}
+                  key={item.id}
                   type="button"
-                  onClick={() => setActiveTab(item.label)}
-                  className={`flex w-full items-center rounded-lg px-4 py-2.5 text-left text-sm transition ${
+                  onClick={() => setActiveTab(item.id)}
+                  className={`flex w-full items-center justify-between rounded-lg px-4 py-2.5 text-left text-sm transition ${
                     isActive
                       ? "bg-orange-700 font-semibold text-white"
                       : "font-medium text-white/80 hover:bg-white/10 hover:text-white"
                   }`}
                 >
-                  {item.label}
+                  <span>{item.label}</span>
+                  {item.id === "My Bookings" && stats.pendingApprovals > 0 && (
+                    <span className="rounded-full bg-amber-400 px-1.5 py-0.5 text-[10px] font-extrabold text-black">
+                      {stats.pendingApprovals}
+                    </span>
+                  )}
                 </button>
               );
             })}
           </nav>
         </div>
 
-        <div className="px-7 py-6">
+        <div className="border-t border-white/10 px-6 py-5">
+          <p className="truncate text-xs font-semibold text-white">
+            {displayName}
+          </p>
+          <p className="truncate text-[11px] text-slate-300">{user?.email}</p>
           <button
             type="button"
             onClick={handleLogout}
-            className="text-sm font-medium text-white/80 transition hover:text-white"
+            className="mt-3 text-xs font-semibold text-orange-300 transition hover:text-white"
           >
             Logout
           </button>
@@ -278,27 +606,35 @@ function CustomerDashboard() {
       </aside>
 
       {/* Mobile Top Header */}
-      <header className="flex items-center justify-between bg-[#13294b] px-5 py-4 text-white lg:hidden">
+      <header className="sticky top-0 z-30 flex items-center justify-between bg-[#13294b] px-4 py-3.5 text-white shadow-sm lg:hidden">
         <div className="min-w-0">
-          <p className="text-xs text-white/80">Welcome,</p>
-          <h1 className="truncate text-lg leading-tight font-bold">
-            {displayName}
+          <p className="text-[11px] font-medium text-orange-300">
+            Vehicle Service
+          </p>
+          <h1 className="truncate text-base leading-tight font-bold">
+            Hi, {displayName}
           </h1>
         </div>
-        <div className="flex items-center gap-3">
-          <span className="text-sm font-bold tracking-tight">
-            Vehicle Service
-          </span>
+        <div className="flex items-center gap-2.5">
+          {notificationBellControl}
+          <button
+            type="button"
+            onClick={handleLogout}
+            className="rounded-lg bg-white/10 px-3 py-2 text-xs font-semibold text-white"
+          >
+            Logout
+          </button>
         </div>
       </header>
 
       {/* Main Content Area */}
-      <main className="flex-1 px-4 pt-4 pb-24 sm:px-6 lg:px-10 lg:py-8">
-        <div className="mx-auto max-w-5xl space-y-4 lg:space-y-5">
+      <main className="flex-1 px-4 pt-5 pb-24 sm:px-6 lg:px-10 lg:py-8">
+        <div className="mx-auto max-w-6xl space-y-5">
           {activeTab === "My Vehicles" ? (
-            <Vehicle onVehiclesLoaded={setVehicles} />
+            <Vehicle onVehiclesChange={setVehicles} />
           ) : activeTab === "My Bookings" || activeTab === "Book a Service" ? (
             <Booking
+              key={activeTab}
               initialTab={activeTab === "Book a Service" ? "new" : "list"}
               onNavigateToVehicles={() => setActiveTab("My Vehicles")}
               onBookingsChange={setBookings}
@@ -307,45 +643,32 @@ function CustomerDashboard() {
             <Profile
               vehiclesCount={vehicles.length}
               bookingsCount={bookings.length}
-              onNavigateTab={setActiveTab}
               onLogout={handleLogout}
             />
           ) : (
             <>
-              {/* Desktop Greeting Header */}
-              <div className="hidden items-center justify-between lg:flex">
+              {/* Desktop Header Bar with Real-Time Notification Bell */}
+              <div className="flex flex-wrap items-center justify-between gap-3">
                 <div>
-                  <h1 className="text-2xl font-bold tracking-tight text-[#13294b]">
-                    Welcome, {displayName}
+                  <h1 className="text-xl font-bold tracking-tight text-[#13294b] sm:text-2xl">
+                    Welcome back, {displayName}
                   </h1>
-                  <p
-                    className="mt-0.5 text-sm text-slate-500"
-                    title={apiMessage || undefined}
-                  >
-                    Here is where your vehicle is right now.
+                  <p className="mt-0.5 text-sm text-slate-500">
+                    Track your vehicle service progress, driver status, and
+                    repair approvals.
                   </p>
                 </div>
+
                 <div className="flex items-center gap-2.5">
-                  <button
-                    type="button"
-                    onClick={() => setRefreshCount((c) => c + 1)}
-                    className="rounded-lg border border-gray-300 bg-white px-3.5 py-2.5 text-xs font-semibold text-[#13294b] transition hover:bg-slate-50"
-                  >
-                    ↻ Refresh
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => setActiveTab("My Vehicles")}
-                    className="rounded-lg border border-[#13294b] bg-white px-4 py-2.5 text-xs font-semibold text-[#13294b] transition hover:bg-slate-50"
-                  >
-                    My Vehicles ({vehicles.length})
-                  </button>
+                  <div className="hidden lg:block">
+                    {notificationBellControl}
+                  </div>
                   <button
                     type="button"
                     onClick={() => setActiveTab("Book a Service")}
-                    className="rounded-lg bg-[#13294b] px-5 py-2.5 text-xs font-semibold text-white transition hover:bg-[#1a3660]"
+                    className="rounded-xl bg-orange-700 px-4 py-2.5 text-xs font-bold text-white shadow-2xs transition hover:bg-orange-800"
                   >
-                    Book a Service
+                    + Book a Service
                   </button>
                 </div>
               </div>
@@ -358,83 +681,185 @@ function CustomerDashboard() {
                 />
               )}
 
-              {/* Vehicle Progress Card (Dynamically Updated from Customer Booking) */}
-              <section className="rounded-2xl border border-gray-200 bg-white p-4 shadow-2xs sm:p-6">
-                <div className="flex items-start justify-between gap-2">
-                  <div>
-                    <h2 className="text-sm font-bold text-[#13294b] sm:text-base">
-                      {vehicleHeaderLabel}
-                    </h2>
-                    {activeBooking ? (
-                      <>
-                        <p className="mt-0.5 text-xs text-slate-500 lg:hidden">
-                          {packageName} · {formattedBookingDate}
-                        </p>
-                        <p className="mt-0.5 hidden text-xs text-slate-500 lg:block">
-                          {packageName} · {formattedBookingDate} ·{" "}
-                          {activeBooking.serviceTime}
-                          {activeBooking.invoice?.totalAmount
-                            ? ` · Est. Rs. ${activeBooking.invoice.totalAmount.toLocaleString()}`
-                            : ""}
-                        </p>
-                      </>
-                    ) : (
-                      <p className="mt-0.5 text-xs text-slate-500">
-                        No active service booking yet — book a service to track
-                        progress here.
-                      </p>
-                    )}
-                  </div>
-                  <span
-                    className={`shrink-0 rounded-full px-3 py-1 text-[11px] font-semibold ${
-                      activeBooking
-                        ? "bg-[#fef3e2] text-orange-800"
-                        : "bg-slate-100 text-slate-600"
+              {/* Compact KPI Strip */}
+              <div className="grid grid-cols-3 gap-3 sm:gap-4">
+                <button
+                  type="button"
+                  onClick={() => setActiveTab("My Vehicles")}
+                  className="rounded-2xl border border-gray-200 bg-white p-4 text-left shadow-2xs transition hover:border-orange-300"
+                >
+                  <p className="text-xs font-medium text-slate-500">
+                    My Vehicles
+                  </p>
+                  <p className="mt-1 text-2xl font-extrabold text-[#13294b]">
+                    {vehicles.length}
+                  </p>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => setActiveTab("My Bookings")}
+                  className="rounded-2xl border border-gray-200 bg-white p-4 text-left shadow-2xs transition hover:border-orange-300"
+                >
+                  <p className="text-xs font-medium text-slate-500">
+                    Active Bookings
+                  </p>
+                  <p className="mt-1 text-2xl font-extrabold text-blue-700">
+                    {stats.activeCount}
+                  </p>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => {
+                    if (stats.pendingApprovals > 0) {
+                      approvalSectionRef.current?.scrollIntoView({
+                        behavior: "smooth",
+                        block: "center",
+                      });
+                    } else {
+                      setActiveTab("My Bookings");
+                    }
+                  }}
+                  className={`rounded-2xl border p-4 text-left shadow-2xs transition ${
+                    stats.pendingApprovals > 0
+                      ? "border-amber-300 bg-amber-50/50 hover:border-amber-400"
+                      : "border-gray-200 bg-white hover:border-orange-300"
+                  }`}
+                >
+                  <p className="text-xs font-medium text-slate-500">
+                    Pending Approvals
+                  </p>
+                  <p
+                    className={`mt-1 text-2xl font-extrabold ${
+                      stats.pendingApprovals > 0
+                        ? "text-amber-700"
+                        : "text-emerald-700"
                     }`}
                   >
-                    {badgeText}
-                  </span>
-                </div>
+                    {stats.pendingApprovals}
+                  </p>
+                </button>
+              </div>
 
-                {/* 5-Step Workshop Progress Bar */}
-                <div className="mt-4 grid grid-cols-5 gap-1.5 sm:gap-2">
-                  {serviceSteps.map((step) => {
-                    const barColor =
-                      step.status === "done"
-                        ? "bg-emerald-700"
-                        : step.status === "current"
-                          ? "bg-orange-700"
-                          : "bg-slate-200";
-                    const textColor =
-                      step.status === "done"
-                        ? "font-semibold text-emerald-700"
-                        : step.status === "current"
-                          ? "font-semibold text-orange-700"
-                          : "text-slate-400";
+              {/* Hero Active Vehicle Status Card */}
+              <section className="overflow-hidden rounded-2xl border border-gray-200 bg-white shadow-2xs">
+                <div className="flex flex-wrap items-center justify-between gap-3 bg-[#13294b] px-5 py-4 text-white sm:px-6">
+                  <div className="flex flex-wrap items-center gap-3">
+                    {plateNo && (
+                      <span className="rounded-md border-2 border-black bg-yellow-400 px-3 py-1 text-xs font-black tracking-widest text-black uppercase">
+                        {plateNo}
+                      </span>
+                    )}
+                    <div>
+                      <h2 className="text-base font-bold">{vehicleTitle}</h2>
+                      <p className="mt-0.5 text-xs text-slate-300">
+                        {activeBooking
+                          ? `${packageName} · ${formattedBookingDate} at ${activeBooking.serviceTime}`
+                          : "Schedule a service to track your vehicle progress here."}
+                      </p>
+                    </div>
+                  </div>
 
-                    return (
-                      <div key={step.label} className="flex flex-col">
-                        <div
-                          className={`h-1.5 w-full rounded-full ${barColor}`}
-                        />
-                        <span
-                          className={`mt-2 hidden text-center text-[11px] leading-tight lg:block ${textColor}`}
-                        >
-                          {step.label}
+                  <div className="flex flex-wrap items-center gap-2">
+                    {activeBay?.bayName &&
+                      activeBooking?.status === "In Progress" && (
+                        <span className="rounded-full bg-white/15 px-3 py-1 text-[11px] font-semibold text-white">
+                          {activeBay.bayName} ({activeBay.bayType})
                         </span>
-                      </div>
-                    );
-                  })}
+                      )}
+                    <span
+                      className={`rounded-full px-3 py-1 text-xs font-bold ${
+                        STAGE_BADGE[pipeline.badgeText] ||
+                        "bg-white text-[#13294b]"
+                      }`}
+                    >
+                      {pipeline.badgeText}
+                    </span>
+                  </div>
                 </div>
 
-                <p className="mt-2.5 text-xs text-slate-500 lg:hidden">
-                  {activeBooking && currentStepIndex >= 0
-                    ? `Step ${currentStepIndex + 1} of ${STEP_LABELS.length} · ${STEP_LABELS[currentStepIndex]}`
-                    : `Step 0 of ${STEP_LABELS.length} · Awaiting Booking`}
-                </p>
+                <div className="p-5 sm:p-6">
+                  {/* Horizontal Service Stepper */}
+                  <div className="flex items-start overflow-x-auto pb-1">
+                    {pipeline.steps.map((label, idx) => {
+                      const isDone =
+                        pipeline.current >= 0 && idx < pipeline.current;
+                      const isCurrent = idx === pipeline.current;
+                      const isLast = idx === pipeline.steps.length - 1;
+
+                      return (
+                        <div
+                          key={label}
+                          className={`flex items-start ${isLast ? "" : "flex-1"}`}
+                        >
+                          <div className="flex w-20 shrink-0 flex-col items-center text-center">
+                            <span
+                              className={`flex h-7 w-7 items-center justify-center rounded-full text-xs font-bold ${
+                                isDone
+                                  ? "bg-emerald-600 text-white"
+                                  : isCurrent
+                                    ? "bg-orange-600 text-white ring-4 ring-orange-100"
+                                    : "bg-slate-200 text-slate-400"
+                              }`}
+                            >
+                              {isDone ? "✓" : idx + 1}
+                            </span>
+                            <span
+                              className={`mt-1.5 text-[11px] leading-tight ${
+                                isCurrent
+                                  ? "font-bold text-[#13294b]"
+                                  : isDone
+                                    ? "font-semibold text-emerald-700"
+                                    : "text-slate-400"
+                              }`}
+                            >
+                              {label}
+                            </span>
+                          </div>
+                          {!isLast && (
+                            <span
+                              className={`mt-3.5 h-0.5 min-w-4 flex-1 ${
+                                isDone ? "bg-emerald-500" : "bg-slate-200"
+                              }`}
+                            />
+                          )}
+                        </div>
+                      );
+                    })}
+                  </div>
+
+                  {activeBooking && (
+                    <div className="mt-4 flex flex-wrap items-center justify-between gap-2 border-t border-gray-100 pt-3.5 text-xs">
+                      <div className="text-slate-600">
+                        {activeBooking.invoice?.totalAmount !== undefined && (
+                          <span>
+                            Estimated Total:{" "}
+                            <strong className="text-sm text-[#13294b]">
+                              Rs.{" "}
+                              {Number(
+                                activeBooking.invoice.totalAmount || 0,
+                              ).toLocaleString()}
+                            </strong>
+                            <span className="ml-1.5 text-slate-400">
+                              ({activeBooking.invoice.paymentStatus || "Unpaid"})
+                            </span>
+                          </span>
+                        )}
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => setActiveTab("My Bookings")}
+                        className="font-bold text-orange-700 hover:underline"
+                      >
+                        View All Bookings &amp; Full Details →
+                      </button>
+                    </div>
+                  )}
+                </div>
               </section>
 
-              {/* Workshop Inspection & Live Additional Work Approval Card */}
+              {/* Workshop Inspection Notes & Additional Repairs Approval Card */}
               {activeBooking?.service &&
                 ((activeBooking.service.additionalWorks || []).length > 0 ||
                   activeBooking.service.inspectionNotes) &&
@@ -450,7 +875,8 @@ function CustomerDashboard() {
 
                   return (
                     <section
-                      className={`rounded-2xl border p-4 shadow-2xs sm:p-6 ${
+                      ref={approvalSectionRef}
+                      className={`rounded-2xl border p-5 shadow-2xs sm:p-6 ${
                         pendingWorks.length > 0
                           ? "border-amber-300 bg-amber-50/40"
                           : "border-gray-200 bg-white"
@@ -462,13 +888,12 @@ function CustomerDashboard() {
                             Workshop Inspection &amp; Additional Repairs
                           </h3>
                           <p className="mt-0.5 text-xs text-slate-500">
-                            Review any extra issues or spare parts reported by
-                            our technicians and approve or reject each item.
+                            Review extra issues or spare parts reported by our
+                            technicians and approve or reject each item.
                           </p>
                         </div>
                         {pendingWorks.length > 0 && (
-                          <span className="inline-flex items-center gap-1.5 rounded-full bg-amber-100 px-3 py-1 text-xs font-bold text-amber-900">
-                            <span className="h-2 w-2 animate-pulse rounded-full bg-amber-600" />
+                          <span className="rounded-full bg-amber-100 px-3 py-1 text-xs font-bold text-amber-900">
                             Action Required ({pendingWorks.length})
                           </span>
                         )}
@@ -571,7 +996,6 @@ function CustomerDashboard() {
                         </div>
                       )}
 
-                      {/* Live Updated Estimate Breakdown */}
                       {inv.totalAmount !== undefined && (
                         <div className="mt-4 flex flex-wrap items-center justify-between gap-2 rounded-xl bg-[#13294b] px-4 py-3 text-xs text-white">
                           <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-slate-300">
@@ -595,7 +1019,7 @@ function CustomerDashboard() {
                             </span>
                           </div>
                           <span className="text-sm font-extrabold text-yellow-300">
-                            Updated Total: Rs.{" "}
+                            Total: Rs.{" "}
                             {Number(inv.totalAmount || 0).toLocaleString()}
                           </span>
                         </div>
@@ -604,43 +1028,29 @@ function CustomerDashboard() {
                   );
                 })()}
 
-              {/* Middle Section: Live Tracking Map + Your Driver */}
+              {/* Bottom 2-Column Section: Workshop Map + Driver & Recent Updates */}
               <div className="grid grid-cols-1 gap-4 lg:grid-cols-3 lg:gap-5">
-                {/* Live Tracking Card */}
-                <section className="flex flex-col justify-between rounded-2xl border border-gray-200 bg-white p-3.5 shadow-2xs sm:p-5 lg:col-span-2">
+                {/* Route & Service Centre Map */}
+                <section className="flex flex-col justify-between rounded-2xl border border-gray-200 bg-white p-4 shadow-2xs sm:p-5 lg:col-span-2">
                   <div>
-                    <h3 className="mb-3 hidden text-sm font-bold text-[#13294b] lg:block">
-                      Live Tracking
-                    </h3>
-
-                    <div className="relative mx-auto w-full [&_input]:text-xs sm:[&_input]:text-sm [&_.smart-map-container]:gap-2.5! [&_.smart-map-container>div:nth-of-type(2)]:h-52.5! sm:[&_.smart-map-container>div:nth-of-type(2)]:h-62.5!">
-                      {/* Reset Navigation Button Overlaid on the Map */}
+                    <div className="mb-3 flex items-center justify-between">
+                      <h3 className="text-sm font-bold text-[#13294b]">
+                        Service Route &amp; Workshop Locations
+                      </h3>
                       <button
                         type="button"
                         onClick={handleResetMap}
-                        title="Clear markers and route without reloading map"
-                        className="absolute top-16 left-14 z-400 flex items-center gap-1.5 rounded-lg border border-gray-300 bg-white/95 px-2.5 py-1.5 text-xs font-medium text-gray-800 shadow-md backdrop-blur-xs transition hover:bg-gray-100 active:scale-95 sm:px-3 touch-manipulation"
+                        className="rounded-lg border border-gray-200 bg-slate-50 px-2.5 py-1 text-[11px] font-semibold text-slate-600 transition hover:bg-slate-100"
                       >
-                        <svg
-                          xmlns="http://www.w3.org/2000/svg"
-                          fill="none"
-                          viewBox="0 0 24 24"
-                          strokeWidth={2}
-                          stroke="currentColor"
-                          className="h-3.5 w-3.5 shrink-0"
-                        >
-                          <path
-                            strokeLinecap="round"
-                            strokeLinejoin="round"
-                            d="M16.023 9.348h4.992v-.001M2.985 19.644v-4.992m0 0h4.992m-4.993 0 3.181 3.183a8.25 8.25 0 0 0 13.803-3.7M4.031 9.865a8.25 8.25 0 0 1 13.803-3.7l3.181 3.182m0-4.991v4.99"
-                          />
-                        </svg>
-                        <span>Reset Route</span>
+                        Reset Route
                       </button>
+                    </div>
 
+                    <div className="relative mx-auto w-full [&_input]:text-xs sm:[&_input]:text-sm [&_.smart-map-container]:gap-2.5! [&_.smart-map-container>div:nth-of-type(2)]:h-60!">
                       <SmartMap
                         resetTrigger={resetCount}
                         shopCoords={[6.9271, 79.8612]}
+                        externalStartPoint={pickupMapCoords}
                         mode="routing"
                         theme="light"
                         showSearchBox={true}
@@ -651,165 +1061,167 @@ function CustomerDashboard() {
                     </div>
                   </div>
 
-                  {routeCoords ? (
-                    <div className="mt-3 flex flex-wrap items-center justify-between gap-2 text-xs text-slate-500">
-                      <span>
-                        Pickup: {routeCoords.startCoords[0].toFixed(5)},{" "}
-                        {routeCoords.startCoords[1].toFixed(5)}
-                      </span>
-                      <span>
-                        Service Centre ({routeCoords.endCoords[0].toFixed(5)},{" "}
-                        {routeCoords.endCoords[1].toFixed(5)})
-                      </span>
-                    </div>
-                  ) : (
-                    <div className="mt-3 hidden items-center justify-between text-xs text-slate-500 lg:flex">
-                      <span>
-                        Pickup:{" "}
-                        {activeBooking?.pickupLocation?.address ||
-                          "Workshop Drop-off (Colombo)"}
-                      </span>
-                      <span>Main Service Centre, Colombo</span>
-                    </div>
-                  )}
+                  <div className="mt-3 flex flex-wrap items-center justify-between gap-2 text-xs text-slate-500">
+                    <span>
+                      {routeCoords
+                        ? `Route selected (${routeCoords.startCoords[0].toFixed(4)}, ${routeCoords.startCoords[1].toFixed(4)})`
+                        : activeBooking?.pickupLocation?.address
+                          ? `Pickup: ${activeBooking.pickupLocation.address}`
+                          : "Workshop Drop-off · Colombo"}
+                    </span>
+                    <span className="font-medium text-slate-700">
+                      Main Service Centre, Colombo
+                    </span>
+                  </div>
                 </section>
 
-                {/* Your Driver Card */}
-                <section className="flex flex-col justify-between rounded-2xl border border-gray-200 bg-white p-4 shadow-2xs sm:p-5">
-                  <div>
-                    <h3 className="mb-4 hidden text-sm font-bold text-[#13294b] lg:block">
-                      Your Driver
+                {/* Right Column: Real Driver / Bay Info + Recent Updates */}
+                <div className="space-y-4">
+                  {/* Handover / Driver Card (Real Data Only) */}
+                  <section className="rounded-2xl border border-gray-200 bg-white p-4 shadow-2xs sm:p-5">
+                    <h3 className="text-sm font-bold text-[#13294b]">
+                      {activeBooking?.requiresPickup
+                        ? "Pickup & Delivery Driver"
+                        : "Workshop Service Bay"}
                     </h3>
 
-                    <div className="flex items-center justify-between gap-3.5 lg:justify-start">
-                      <div className="flex h-12 w-12 shrink-0 items-center justify-center rounded-full bg-slate-200 text-[11px] font-medium text-slate-500 sm:h-14 sm:w-14">
-                        Photo
-                      </div>
+                    {activeBooking?.requiresPickup ? (
+                      activeDriver ? (
+                        <div className="mt-3 space-y-3">
+                          <div className="flex items-center gap-3">
+                            <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-full bg-[#13294b] text-sm font-bold text-white">
+                              {(activeDriver.name || "D")
+                                .charAt(0)
+                                .toUpperCase()}
+                            </div>
+                            <div className="min-w-0 flex-1">
+                              <p className="truncate text-sm font-bold text-[#13294b]">
+                                {activeDriver.name}
+                              </p>
+                              <p className="text-xs text-slate-500">
+                                {activeDriver.contactNo}
+                              </p>
+                            </div>
+                          </div>
 
-                      <div className="min-w-0 flex-1">
-                        <h4 className="truncate text-sm font-bold text-[#13294b]">
-                          Nuwan Perera
-                        </h4>
-                        <p className="mt-0.5 text-xs text-slate-500 lg:hidden">
-                          DRV001 · 077 123 4567
-                        </p>
-                        <div className="mt-0.5 hidden space-y-0.5 text-xs text-slate-500 lg:block">
-                          <p>ID: DRV001</p>
-                          <p>077 123 4567</p>
+                          <div className="rounded-lg bg-slate-50 px-3 py-2 text-xs">
+                            <span className="text-slate-500">Status: </span>
+                            <strong className="text-[#13294b]">
+                              {activeBooking.pickupDelivery?.pickupStatus ||
+                                "Assigned"}
+                            </strong>
+                          </div>
+
+                          {activeDriver.contactNo && (
+                            <a
+                              href={`tel:${activeDriver.contactNo}`}
+                              className="block w-full rounded-lg border border-[#13294b] bg-white py-2 text-center text-xs font-bold text-[#13294b] transition hover:bg-slate-50"
+                            >
+                              Call Driver
+                            </a>
+                          )}
                         </div>
+                      ) : (
+                        <p className="mt-3 rounded-xl border border-dashed border-gray-200 p-4 text-center text-xs text-slate-500">
+                          Driver assignment is pending for your pickup booking.
+                        </p>
+                      )
+                    ) : activeBay?.bayName ? (
+                      <div className="mt-3 rounded-xl bg-blue-50/70 p-3.5">
+                        <p className="text-sm font-bold text-[#13294b]">
+                          {activeBay.bayName}
+                        </p>
+                        <p className="text-xs text-slate-600">
+                          {activeBay.bayType} Bay · Stage:{" "}
+                          <strong>{activeBooking?.service?.status}</strong>
+                        </p>
                       </div>
+                    ) : (
+                      <p className="mt-3 rounded-xl border border-dashed border-gray-200 p-4 text-center text-xs text-slate-500">
+                        {activeBooking
+                          ? "Workshop Drop-off at Main Service Centre, Colombo."
+                          : "Book a service to see driver or service bay details."}
+                      </p>
+                    )}
+                  </section>
 
-                      <button
-                        type="button"
-                        className="shrink-0 rounded-lg bg-[#13294b] px-4 py-2 text-xs font-semibold text-white transition hover:bg-[#1a3660] lg:hidden"
-                      >
-                        Call
-                      </button>
-                    </div>
-                  </div>
-
-                  <button
-                    type="button"
-                    className="mt-6 hidden w-full rounded-lg border border-[#13294b] bg-white py-2.5 text-center text-xs font-semibold text-[#13294b] transition hover:bg-slate-50 lg:block"
-                  >
-                    Contact Driver
-                  </button>
-                </section>
+                  {/* Recent Workshop Updates */}
+                  <section className="rounded-2xl border border-gray-200 bg-white p-4 shadow-2xs sm:p-5">
+                    <h3 className="text-sm font-bold text-[#13294b]">
+                      Recent Updates
+                    </h3>
+                    {activeLogs.length === 0 ? (
+                      <p className="mt-3 text-xs text-slate-400">
+                        No workshop updates recorded yet.
+                      </p>
+                    ) : (
+                      <div className="mt-3 space-y-2.5">
+                        {[...activeLogs]
+                          .reverse()
+                          .slice(0, 4)
+                          .map((log, idx) => (
+                            <div
+                              key={`${log.stage}-${log.updatedAt}-${idx}`}
+                              className="rounded-xl bg-slate-50 px-3 py-2 text-xs"
+                            >
+                              <div className="flex items-center justify-between gap-2">
+                                <span
+                                  className={`rounded-full px-2 py-0.5 text-[10px] font-bold ${
+                                    STAGE_BADGE[log.stage] ||
+                                    "bg-slate-200 text-slate-700"
+                                  }`}
+                                >
+                                  {log.stage}
+                                </span>
+                                <span className="text-[10px] text-slate-400">
+                                  {formatTimeAgo(log.updatedAt)}
+                                </span>
+                              </div>
+                              {log.note && (
+                                <p className="mt-1 text-[11px] text-slate-600">
+                                  {log.note}
+                                </p>
+                              )}
+                            </div>
+                          ))}
+                      </div>
+                    )}
+                  </section>
+                </div>
               </div>
-
-              {/* Additional Work Approval Banner */}
-              <section className="flex flex-col gap-3.5 rounded-2xl border border-[#f5d0a9] bg-[#fffaf3] p-4 sm:px-6 sm:py-4 lg:flex-row lg:items-center lg:justify-between">
-                <div>
-                  <h3 className="text-sm font-bold text-[#13294b]">
-                    <span className="lg:hidden">
-                      Front brake pads replacement
-                    </span>
-                    <span className="hidden lg:inline">
-                      Additional work found: Front brake pads replacement
-                    </span>
-                  </h3>
-                  <p className="mt-1 text-xs text-slate-500">
-                    Parts Rs. 6,500.00 · Labour Rs. 1,500.00 · Total Rs.
-                    8,000.00
-                  </p>
-                </div>
-
-                <div className="grid grid-cols-2 gap-3 lg:flex lg:shrink-0 lg:items-center lg:gap-2.5">
-                  <button
-                    type="button"
-                    className="rounded-lg border border-[#13294b] bg-white px-5 py-2.5 text-xs font-semibold text-[#13294b] transition hover:bg-slate-50 lg:py-2"
-                  >
-                    Reject
-                  </button>
-                  <button
-                    type="button"
-                    className="rounded-lg bg-emerald-700 px-5 py-2.5 text-xs font-semibold text-white transition hover:bg-emerald-800 lg:py-2"
-                  >
-                    Approve
-                  </button>
-                </div>
-              </section>
             </>
           )}
         </div>
       </main>
 
       {/* Mobile Bottom Navigation Bar */}
-      <nav className="fixed inset-x-0 bottom-0 z-500 flex items-center justify-around border-t border-gray-200 bg-white px-2 py-3 text-xs lg:hidden">
-        <button
-          type="button"
-          onClick={() => setActiveTab("Dashboard")}
-          className={
-            activeTab === "Dashboard"
-              ? "font-semibold text-orange-700"
-              : "font-medium text-slate-500 hover:text-[#13294b]"
-          }
-        >
-          Home
-        </button>
-        <button
-          type="button"
-          onClick={() => setActiveTab("My Vehicles")}
-          className={
-            activeTab === "My Vehicles"
-              ? "font-semibold text-orange-700"
-              : "font-medium text-slate-500 hover:text-[#13294b]"
-          }
-        >
-          Vehicles
-        </button>
-        <button
-          type="button"
-          onClick={() => setActiveTab("My Bookings")}
-          className={
-            activeTab === "My Bookings" || activeTab === "Book a Service"
-              ? "font-semibold text-orange-700"
-              : "font-medium text-slate-500 hover:text-[#13294b]"
-          }
-        >
-          Bookings
-        </button>
-        <button
-          type="button"
-          className="font-medium text-slate-500 hover:text-[#13294b]"
-        >
-          Track
-        </button>
-        <button
-          type="button"
-          onClick={() => setActiveTab("Profile")}
-          className={
-            activeTab === "Profile"
-              ? "font-semibold text-orange-700"
-              : "font-medium text-slate-500 hover:text-[#13294b]"
-          }
-        >
-          Profile
-        </button>
+      <nav className="fixed inset-x-0 bottom-0 z-40 flex items-center justify-around border-t border-gray-200 bg-white px-2 py-2.5 text-xs lg:hidden">
+        {NAV_ITEMS.filter((i) => i.id !== "Book a Service").map((item) => {
+          const isActive =
+            activeTab === item.id ||
+            (item.id === "My Bookings" && activeTab === "Book a Service");
+          return (
+            <button
+              key={item.id}
+              type="button"
+              onClick={() => setActiveTab(item.id)}
+              className={`rounded-lg px-3 py-1 font-semibold transition ${
+                isActive ? "text-orange-700" : "text-slate-500"
+              }`}
+            >
+              {item.id === "Dashboard"
+                ? "Home"
+                : item.id === "My Vehicles"
+                  ? "Vehicles"
+                  : item.id === "My Bookings"
+                    ? "Bookings"
+                    : "Profile"}
+            </button>
+          );
+        })}
       </nav>
     </div>
   );
 }
 
 export default CustomerDashboard;
-

@@ -4,14 +4,14 @@ import { useAuth } from "../../context/AuthContext";
 import Profile from "../customer/Profile";
 import ServiceBayManagement from "../admin/ServiceBayManagement";
 
-const mechanicNavItems = [
-  { label: "Workshop Bays" },
-  { label: "Additional Work Requests" },
-  { label: "Profile" },
+const MECHANIC_TABS = [
+  { id: "bays", label: "Workshop Bays" },
+  { id: "approvals", label: "Approval Queue" },
+  { id: "profile", label: "Profile" },
 ];
 
 function MechanicDashboard() {
-  const [activeTab, setActiveTab] = useState("Workshop Bays");
+  const [activeTab, setActiveTab] = useState("bays");
   const { user, logout } = useAuth();
   const navigate = useNavigate();
 
@@ -23,96 +23,63 @@ function MechanicDashboard() {
   const displayName = user?.name || "Mechanic";
 
   return (
-    <div className="flex min-h-screen flex-col bg-[#f8f9fa] lg:flex-row">
-      {/* Desktop Left Sidebar */}
-      <aside className="hidden w-60 shrink-0 flex-col justify-between bg-[#13294b] text-white lg:sticky lg:top-0 lg:flex lg:h-screen lg:overflow-y-auto">
-        <div>
-          <div className="px-6 pt-7 pb-6">
-            <span className="text-base font-bold tracking-tight">
-              Vehicle Service
-            </span>
-            <p className="mt-0.5 text-[11px] font-medium text-orange-400">
-              Mechanic Workshop Portal
-            </p>
+    <div className="flex min-h-screen flex-col bg-[#f8f9fa]">
+      {/* Sticky Tablet-Friendly Top Bar (No Sidebar) */}
+      <header className="sticky top-0 z-30 bg-[#13294b] text-white shadow-sm">
+        <div className="mx-auto flex max-w-7xl flex-wrap items-center justify-between gap-3 px-4 py-3.5 sm:px-6 lg:px-8">
+          {/* Brand & Technician Name */}
+          <div className="flex items-center gap-3">
+            <div>
+              <span className="text-base font-bold tracking-tight sm:text-lg">
+                Vehicle Service
+              </span>
+              <p className="text-[11px] font-medium text-orange-300">
+                Mechanic Workshop · {displayName}
+              </p>
+            </div>
           </div>
 
-          <nav className="space-y-1 px-3">
-            {mechanicNavItems.map((item) => {
-              const isActive = activeTab === item.label;
+          {/* Segmented Tablet Tab Bar */}
+          <nav className="order-3 flex w-full items-center gap-1.5 rounded-xl bg-white/10 p-1 sm:order-2 sm:w-auto">
+            {MECHANIC_TABS.map((tab) => {
+              const isActive = activeTab === tab.id;
               return (
                 <button
-                  key={item.label}
+                  key={tab.id}
                   type="button"
-                  onClick={() => setActiveTab(item.label)}
-                  className={`flex w-full items-center rounded-lg px-4 py-2.5 text-left text-sm transition ${
+                  onClick={() => setActiveTab(tab.id)}
+                  className={`flex-1 touch-manipulation rounded-lg px-4 py-2 text-xs font-bold transition sm:flex-none sm:text-sm ${
                     isActive
-                      ? "bg-orange-700 font-semibold text-white"
-                      : "font-medium text-white/80 hover:bg-white/10 hover:text-white"
+                      ? "bg-orange-600 text-white shadow-xs"
+                      : "text-white/80 hover:bg-white/10 hover:text-white"
                   }`}
                 >
-                  {item.label}
+                  {tab.label}
                 </button>
               );
             })}
           </nav>
-        </div>
 
-        <div className="px-7 py-6">
+          {/* Logout */}
           <button
             type="button"
             onClick={handleLogout}
-            className="text-sm font-medium text-white/80 transition hover:text-white"
+            className="order-2 rounded-lg border border-white/20 bg-white/10 px-3.5 py-2 text-xs font-semibold text-white transition hover:bg-white/20 sm:order-3"
           >
             Logout
           </button>
         </div>
-      </aside>
-
-      {/* Mobile Top Header */}
-      <header className="flex items-center justify-between bg-[#13294b] px-5 py-4 text-white lg:hidden">
-        <div className="min-w-0">
-          <p className="text-xs text-orange-300">Mechanic Portal</p>
-          <h1 className="truncate text-lg leading-tight font-bold">
-            {displayName}
-          </h1>
-        </div>
-        <button
-          type="button"
-          onClick={handleLogout}
-          className="rounded-lg bg-white/10 px-3 py-1.5 text-xs font-semibold text-white"
-        >
-          Logout
-        </button>
       </header>
 
-      {/* Mobile Bottom Nav */}
-      <nav className="fixed right-0 bottom-0 left-0 z-30 flex items-center justify-around border-t border-gray-200 bg-white px-2 py-2 lg:hidden">
-        {mechanicNavItems.map((item) => {
-          const isActive = activeTab === item.label;
-          return (
-            <button
-              key={item.label}
-              type="button"
-              onClick={() => setActiveTab(item.label)}
-              className={`rounded-lg px-3 py-1.5 text-xs font-semibold transition ${
-                isActive ? "bg-orange-700 text-white" : "text-slate-600"
-              }`}
-            >
-              {item.label}
-            </button>
-          );
-        })}
-      </nav>
-
-      {/* Main Content Area */}
-      <main className="flex-1 px-4 pt-4 pb-24 sm:px-6 lg:px-10 lg:py-8">
-        <div className="mx-auto max-w-6xl space-y-5">
-          {activeTab === "Profile" ? (
+      {/* Full-Width Tablet Workspace */}
+      <main className="flex-1 px-4 py-5 sm:px-6 lg:px-8 lg:py-7">
+        <div className="mx-auto max-w-7xl">
+          {activeTab === "profile" ? (
             <Profile showCustomerStats={false} onLogout={handleLogout} />
           ) : (
             <ServiceBayManagement
               readOnlyBays={true}
-              filterAdditionalWork={activeTab === "Additional Work Requests"}
+              filterAdditionalWork={activeTab === "approvals"}
             />
           )}
         </div>

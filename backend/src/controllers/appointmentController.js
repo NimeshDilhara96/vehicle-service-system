@@ -505,9 +505,9 @@ exports.getMyBookings = async (req, res, next) => {
       .sort({ createdAt: -1 })
       .lean();
 
-    // Fetch corresponding invoices and services for these appointments
+    // Fetch corresponding invoices, services (with bay info), and pickup tasks for these appointments
     const appointmentIds = appointments.map((a) => a._id);
-    const [invoices, services] = await Promise.all([
+    const [invoices, services, pickups] = await Promise.all([
       Invoice.find({
         appointmentId: { $in: appointmentIds },
         customerId: req.user._id,
@@ -515,7 +515,15 @@ exports.getMyBookings = async (req, res, next) => {
       Service.find({
         appointmentId: { $in: appointmentIds },
         customerId: req.user._id,
-      }).lean(),
+      })
+        .populate("bayId", "bayName bayType")
+        .lean(),
+      PickupDelivery.find({
+        appointmentId: { $in: appointmentIds },
+        customerId: req.user._id,
+      })
+        .populate("driverId", "name contactNo")
+        .lean(),
     ]);
 
     const invoiceMap = {};
@@ -530,11 +538,19 @@ exports.getMyBookings = async (req, res, next) => {
       }
     });
 
-    // Attach invoice and service directly to each appointment object for easy Frontend rendering
+    const pickupMap = {};
+    pickups.forEach((p) => {
+      if (p.appointmentId) {
+        pickupMap[p.appointmentId.toString()] = p;
+      }
+    });
+
+    // Attach invoice, service, and pickupDelivery directly to each appointment object for easy Frontend rendering
     const enrichedAppointments = appointments.map((app) => ({
       ...app,
       invoice: invoiceMap[app._id.toString()] || null,
       service: serviceMap[app._id.toString()] || null,
+      pickupDelivery: pickupMap[app._id.toString()] || null,
     }));
 
     res.status(200).json({

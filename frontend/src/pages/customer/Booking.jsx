@@ -48,6 +48,104 @@ const inputClass =
 const buttonClass =
   "py-2.5! font-semibold! bg-orange-700! hover:bg-orange-800! text-white!";
 
+const BOOKING_STATUS_BADGE = {
+  Confirmed: "bg-blue-50 text-blue-700 border-blue-200",
+  "In Progress": "bg-orange-50 text-orange-700 border-orange-200",
+  Completed: "bg-emerald-50 text-emerald-700 border-emerald-200",
+  Cancelled: "bg-red-50 text-red-600 border-red-200",
+  Pending: "bg-amber-50 text-amber-700 border-amber-200",
+};
+
+const SERVICE_STAGE_BADGE = {
+  "Vehicle Received": "bg-slate-100 text-slate-700",
+  Inspection: "bg-sky-100 text-sky-800",
+  "Waiting for Approval": "bg-amber-100 text-amber-900",
+  "In Progress": "bg-blue-100 text-blue-800",
+  "Waiting for Parts": "bg-purple-100 text-purple-800",
+  Completed: "bg-emerald-100 text-emerald-800",
+};
+
+function formatDateTime(val) {
+  if (!val) return "—";
+  try {
+    return new Date(val).toLocaleString("en-GB", {
+      day: "2-digit",
+      month: "short",
+      year: "numeric",
+      hour: "2-digit",
+      minute: "2-digit",
+    });
+  } catch {
+    return "—";
+  }
+}
+
+function getCustomerBookingProgress(app) {
+  if (app.status === "Cancelled") {
+    return { steps: [], current: 0, isCancelled: true };
+  }
+
+  const isPickup = Boolean(app.requiresPickup);
+  const steps = isPickup
+    ? [
+        "Booked",
+        "Driver Pickup",
+        "Vehicle Check",
+        "In Progress",
+        "Approval",
+        "Completed",
+      ]
+    : ["Booked", "Vehicle Check", "In Progress", "Approval", "Completed"];
+
+  const lastIdx = steps.length - 1;
+  const srvStatus = app.service?.status || "";
+  const works = Array.isArray(app.service?.additionalWorks)
+    ? app.service.additionalWorks
+    : [];
+  const hasPending = works.some((w) => w.status === "Pending Approval");
+  const hasResponded = works.some(
+    (w) => w.status === "Approved" || w.status === "Rejected",
+  );
+
+  if (app.status === "Completed" || srvStatus === "Completed") {
+    return { steps, current: lastIdx, isCancelled: false };
+  }
+
+  const offset = isPickup ? 1 : 0;
+
+  if (srvStatus === "Waiting for Approval" || hasPending) {
+    return { steps, current: 3 + offset, isCancelled: false };
+  }
+  if (srvStatus === "In Progress" || srvStatus === "Waiting for Parts") {
+    return {
+      steps,
+      current: hasResponded ? 3 + offset : 2 + offset,
+      isCancelled: false,
+    };
+  }
+  if (
+    srvStatus === "Inspection" ||
+    srvStatus === "Vehicle Received" ||
+    app.status === "In Progress"
+  ) {
+    return { steps, current: 1 + offset, isCancelled: false };
+  }
+
+  if (isPickup) {
+    const pStatus = app.pickupDelivery?.pickupStatus || "";
+    if (
+      pStatus === "Driver Assigned" ||
+      pStatus === "En Route to Pickup" ||
+      pStatus === "Vehicle Picked Up" ||
+      pStatus === "Delivered to Workshop"
+    ) {
+      return { steps, current: 1, isCancelled: false };
+    }
+  }
+
+  return { steps, current: 0, isCancelled: false };
+}
+
 function Booking({ initialTab = "new", onNavigateToVehicles, onBookingsChange }) {
   const [activeSubTab, setActiveSubTab] = useState(initialTab); // 'new' | 'list'
   const [vehicles, setVehicles] = useState([]);
@@ -60,6 +158,12 @@ function Booking({ initialTab = "new", onNavigateToVehicles, onBookingsChange })
   const [calculatingFare, setCalculatingFare] = useState(false);
   const [error, setError] = useState("");
   const [successMsg, setSuccessMsg] = useState("");
+
+  // Booking Details Popup Modal State (My Bookings)
+  const [selectedBookingId, setSelectedBookingId] = useState(null);
+  const [respondingItemId, setRespondingItemId] = useState(null);
+  const [refreshingList, setRefreshingList] = useState(false);
+  const [modalFeedback, setModalFeedback] = useState({ type: "", text: "" });
 
   // Today's local date in YYYY-MM-DD for min date & initial slot check
   const todayStr = getLocalTodayStr();
@@ -445,6 +549,76 @@ function Booking({ initialTab = "new", onNavigateToVehicles, onBookingsChange })
       setSubmitting(false);
     }
   };
+
+  const handleRefreshBookings = async () => {
+    setRefreshingList(true);
+    try {
+      const bookRes = await api.get("/appointments");
+      if (bookRes.data.success) {
+        const appList = bookRes.data.appointments || [];
+        setBookings(appList);
+        if (onBookingsChange) {
+          onBookingsChange(appList);
+        }
+      }
+    } catch {
+      // Ignore transient refresh error
+    } finally {
+      setRefreshingList(false);
+    }
+  };
+
+  const handleRespondAdditionalWork = async (serviceId, itemId, decision) => {
+    setRespondingItemId(itemId);
+    setModalFeedback({ type: "", text: "" });
+
+    try {
+      const res = await api.patch(
+        `/service-bays/customer/services/${serviceId}/additional-work/${itemId}`,
+        { decision },
+      );
+
+      if (res.data.success) {
+        setBookings((prev) => {
+          const next = prev.map((b) =>
+            b.service?._id === serviceId
+              ? {
+                  ...b,
+                  service: res.data.service
+                    ? { ...res.data.service, bayId: b.service?.bayId }
+                    : b.service,
+                  invoice: res.data.invoice || b.invoice,
+                }
+              : b,
+          );
+          if (onBookingsChange) {
+            onBookingsChange(next);
+          }
+          return next;
+        });
+        setModalFeedback({
+          type: "success",
+          text:
+            res.data.message ||
+            `Additional work item ${decision.toLowerCase()}.`,
+        });
+      }
+    } catch (err) {
+      setModalFeedback({
+        type: "error",
+        text:
+          err.response?.data?.message ||
+          "Failed to submit your approval decision.",
+      });
+    } finally {
+      setRespondingItemId(null);
+    }
+  };
+
+  const selectedBooking = useMemo(
+    () => bookings.find((b) => b._id === selectedBookingId) || null,
+    [bookings, selectedBookingId],
+  );
 
   const totalEstimate =
     (selectedPackage ? selectedPackage.price : 0) +
@@ -932,10 +1106,25 @@ function Booking({ initialTab = "new", onNavigateToVehicles, onBookingsChange })
           </form>
         )
       ) : (
-        /* My Bookings List */
-        <div className="space-y-4">
+        /* My Bookings List — Clickable Bars + Full Vehicle & Service Details Popup */
+        <div className="space-y-3">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <p className="text-xs text-slate-500">
+              Click any booking to inspect complete vehicle details, live
+              workshop status, and approve additional repairs.
+            </p>
+            <button
+              type="button"
+              disabled={refreshingList}
+              onClick={handleRefreshBookings}
+              className="rounded-lg border border-gray-300 bg-white px-3 py-1.5 text-xs font-semibold text-[#13294b] transition hover:bg-slate-50 disabled:opacity-50"
+            >
+              {refreshingList ? "Refreshing..." : "↻ Refresh"}
+            </button>
+          </div>
+
           {bookings.length === 0 ? (
-            <div className="rounded-2xl border border-gray-200 bg-white p-8 text-center shadow-2xs">
+            <div className="rounded-2xl border border-dashed border-gray-300 bg-white p-10 text-center shadow-2xs">
               <p className="text-sm font-semibold text-[#13294b]">
                 No appointments booked yet
               </p>
@@ -945,6 +1134,17 @@ function Booking({ initialTab = "new", onNavigateToVehicles, onBookingsChange })
             </div>
           ) : (
             bookings.map((app) => {
+              const vSnap = app.vehicleSnapshot || {};
+              const srv = app.service || null;
+              const bay = srv?.bayId || null;
+              const works = Array.isArray(srv?.additionalWorks)
+                ? srv.additionalWorks
+                : [];
+              const pendingCount = works.filter(
+                (w) => w.status === "Pending Approval",
+              ).length;
+              const progress = getCustomerBookingProgress(app);
+
               const dateStr = app.serviceDate
                 ? new Date(app.serviceDate).toLocaleDateString("en-GB", {
                     day: "2-digit",
@@ -953,68 +1153,681 @@ function Booking({ initialTab = "new", onNavigateToVehicles, onBookingsChange })
                   })
                 : "Scheduled";
 
+              const vehicleTitle =
+                [vSnap.brand, vSnap.modelName].filter(Boolean).join(" ") ||
+                vSnap.vehicleType ||
+                "Registered Vehicle";
+
+              let leftAccent = "border-l-slate-300";
+              if (app.status === "Cancelled") leftAccent = "border-l-red-400";
+              else if (app.status === "Completed")
+                leftAccent = "border-l-emerald-500";
+              else if (pendingCount > 0) leftAccent = "border-l-amber-500";
+              else if (app.status === "In Progress")
+                leftAccent = "border-l-blue-600";
+              else if (app.status === "Confirmed")
+                leftAccent = "border-l-orange-500";
+
               return (
                 <div
                   key={app._id}
-                  className="rounded-2xl border border-gray-200 bg-white p-5 shadow-2xs transition hover:border-gray-300"
+                  role="button"
+                  tabIndex={0}
+                  onClick={() => {
+                    setSelectedBookingId(app._id);
+                    setModalFeedback({ type: "", text: "" });
+                  }}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter" || e.key === " ") {
+                      e.preventDefault();
+                      setSelectedBookingId(app._id);
+                      setModalFeedback({ type: "", text: "" });
+                    }
+                  }}
+                  className={`group cursor-pointer overflow-hidden rounded-xl border border-gray-200 border-l-4 ${leftAccent} bg-white shadow-2xs transition hover:border-orange-300 hover:shadow-sm focus:ring-2 focus:ring-orange-400 focus:outline-none`}
                 >
-                  <div className="flex flex-wrap items-start justify-between gap-3">
-                    <div>
-                      <div className="flex items-center gap-2">
-                        <span className="rounded-lg bg-[#13294b] px-2.5 py-1 text-xs font-bold uppercase text-white">
-                          {app.vehicleSnapshot?.registrationNo || "Vehicle"}
-                        </span>
-                        <span className="text-sm font-bold text-[#13294b]">
-                          {[app.vehicleSnapshot?.brand, app.vehicleSnapshot?.modelName]
-                            .filter(Boolean)
-                            .join(" ")}
-                        </span>
+                  {/* Top Horizontal Bar */}
+                  <div className="flex flex-col gap-3 px-4 py-3.5 transition group-hover:bg-orange-50/20 lg:flex-row lg:items-center lg:justify-between">
+                    <div className="flex min-w-0 flex-1 items-center gap-3.5">
+                      <span className="shrink-0 rounded border-2 border-black bg-yellow-400 px-2.5 py-1 text-xs font-extrabold tracking-widest text-black uppercase">
+                        {vSnap.registrationNo || "Vehicle"}
+                      </span>
+
+                      <div className="min-w-0 flex-1">
+                        <div className="flex flex-wrap items-center gap-2">
+                          <h3 className="truncate text-sm font-bold text-[#13294b] group-hover:text-orange-700">
+                            {vehicleTitle}
+                          </h3>
+                          <span className="hidden text-slate-300 sm:inline">
+                            ·
+                          </span>
+                          <span className="truncate text-xs font-medium text-slate-600">
+                            {app.packageId?.packageName || "Service Package"}
+                          </span>
+                        </div>
+                        <div className="mt-0.5 flex flex-wrap items-center gap-x-2.5 gap-y-0.5 text-[11px] text-slate-500">
+                          <span className="font-semibold text-orange-700">
+                            {dateStr} at {app.serviceTime}
+                          </span>
+                          <span
+                            className={`rounded px-1.5 py-0.5 text-[10px] font-semibold ${
+                              app.requiresPickup
+                                ? "bg-orange-50 text-orange-800"
+                                : "bg-slate-100 text-slate-600"
+                            }`}
+                          >
+                            {app.requiresPickup ? "Pickup & Delivery" : "Drop-off"}
+                          </span>
+                          {bay?.bayName && app.status === "In Progress" && (
+                            <span className="rounded bg-blue-50 px-1.5 py-0.5 text-[10px] font-bold text-blue-800">
+                              {bay.bayName}
+                            </span>
+                          )}
+                        </div>
                       </div>
-                      <p className="mt-1.5 text-xs text-slate-500">
-                        {app.packageId?.packageName || "Service Package"} · {dateStr} at{" "}
-                        {app.serviceTime}
-                      </p>
-                      {app.requiresPickup && app.pickupLocation?.address && (
-                        <p className="mt-1 text-xs text-slate-600">
-                          Pickup Location:{" "}
-                          <strong className="text-[#13294b]">
-                            {app.pickupLocation.address}
-                          </strong>
-                        </p>
-                      )}
                     </div>
 
-                    <div className="flex items-center gap-2">
-                      <span className="rounded-full bg-[#fef3e2] px-3 py-1 text-[11px] font-semibold text-orange-800">
-                        {app.status}
-                      </span>
+                    <div className="flex flex-wrap items-center justify-between gap-3 border-t border-gray-100 pt-2 lg:shrink-0 lg:justify-end lg:border-t-0 lg:pt-0">
+                      <div className="flex flex-wrap items-center gap-2">
+                        {pendingCount > 0 && (
+                          <span className="inline-flex items-center gap-1 rounded-full bg-amber-100 px-2.5 py-0.5 text-[10px] font-bold text-amber-900">
+                            <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-amber-600" />
+                            {pendingCount} Approval Needed
+                          </span>
+                        )}
+                        {srv?.status && app.status === "In Progress" && (
+                          <span
+                            className={`rounded-full px-2.5 py-0.5 text-[10px] font-bold ${
+                              SERVICE_STAGE_BADGE[srv.status] ||
+                              "bg-blue-100 text-blue-800"
+                            }`}
+                          >
+                            {srv.status}
+                          </span>
+                        )}
+                        <span
+                          className={`rounded-full border px-2.5 py-0.5 text-[10px] font-bold ${
+                            BOOKING_STATUS_BADGE[app.status] ||
+                            "bg-slate-100 text-slate-700"
+                          }`}
+                        >
+                          {app.status}
+                        </span>
+                      </div>
+
+                      <div className="flex items-center gap-3">
+                        <div className="text-right">
+                          <p className="text-xs font-extrabold text-[#13294b]">
+                            Rs.{" "}
+                            {(
+                              app.invoice?.totalAmount ??
+                              app.packageId?.price ??
+                              0
+                            ).toLocaleString()}
+                          </p>
+                          <p className="text-[10px] text-slate-400">
+                            {app.invoice?.paymentStatus || "Unpaid"}
+                          </p>
+                        </div>
+                        <span className="text-sm font-bold text-slate-400 transition group-hover:translate-x-0.5 group-hover:text-orange-700">
+                          →
+                        </span>
+                      </div>
                     </div>
                   </div>
 
-                  {/* Invoice / Pricing Details */}
-                  {app.invoice && (
-                    <div className="mt-4 flex flex-wrap items-center justify-between gap-2 border-t border-gray-100 pt-3 text-xs text-slate-600">
-                      <div>
-                        <span>Stage: <strong>{app.invoice.invoiceStage}</strong></span>
-                        <span className="mx-2">·</span>
-                        <span>Payment: <strong>{app.invoice.paymentStatus}</strong></span>
+                  {/* Live Status Progress Strip Below Each Booking Bar */}
+                  <div className="border-t border-gray-100 bg-slate-50/70 px-4 py-2.5">
+                    {progress.isCancelled ? (
+                      <p className="text-[11px] font-semibold text-red-600">
+                        ✕ This booking was cancelled
+                      </p>
+                    ) : (
+                      <div className="flex items-start overflow-x-auto">
+                        {progress.steps.map((label, idx) => {
+                          const isDone = idx < progress.current;
+                          const isCurrent = idx === progress.current;
+                          const isLast = idx === progress.steps.length - 1;
+                          return (
+                            <div
+                              key={label}
+                              className={`flex items-start ${isLast ? "" : "flex-1"}`}
+                            >
+                              <div className="flex w-16 shrink-0 flex-col items-center text-center">
+                                <span
+                                  className={`flex h-5 w-5 items-center justify-center rounded-full text-[10px] font-bold ${
+                                    isDone
+                                      ? "bg-emerald-600 text-white"
+                                      : isCurrent
+                                        ? "bg-orange-700 text-white ring-4 ring-orange-100"
+                                        : "bg-slate-200 text-slate-400"
+                                  }`}
+                                >
+                                  {isDone ? "✓" : idx + 1}
+                                </span>
+                                <span
+                                  className={`mt-1 text-[10px] leading-tight ${
+                                    isCurrent
+                                      ? "font-bold text-orange-700"
+                                      : isDone
+                                        ? "font-medium text-emerald-700"
+                                        : "text-slate-400"
+                                  }`}
+                                >
+                                  {label}
+                                </span>
+                              </div>
+                              {!isLast && (
+                                <span
+                                  className={`mt-2.5 h-0.5 min-w-4 flex-1 ${
+                                    isDone ? "bg-emerald-500" : "bg-slate-200"
+                                  }`}
+                                />
+                              )}
+                            </div>
+                          );
+                        })}
                       </div>
-                      <div>
-                        <span>
-                          Total:{" "}
-                          <strong className="text-sm font-bold text-[#13294b]">
-                            Rs. {app.invoice.totalAmount?.toLocaleString()}
-                          </strong>
-                        </span>
-                      </div>
-                    </div>
-                  )}
+                    )}
+                  </div>
                 </div>
               );
             })
           )}
         </div>
       )}
+
+      {/* Complete Vehicle & Live Service Status Popup Modal (Service Bay Style) */}
+      {selectedBooking &&
+        (() => {
+          const app = selectedBooking;
+          const vSnap = app.vehicleSnapshot || {};
+          const pkg = app.packageId || {};
+          const srv = app.service || null;
+          const bay = srv?.bayId || null;
+          const inv = app.invoice || null;
+          const pickup = app.pickupDelivery || null;
+          const driver = pickup?.driverId || null;
+          const works = Array.isArray(srv?.additionalWorks)
+            ? srv.additionalWorks
+            : [];
+          const logs = Array.isArray(srv?.statusLogs) ? srv.statusLogs : [];
+          const pendingWorks = works.filter(
+            (w) => w.status === "Pending Approval",
+          );
+          const progress = getCustomerBookingProgress(app);
+
+          const vehicleTitle =
+            [vSnap.brand, vSnap.modelName].filter(Boolean).join(" ") ||
+            vSnap.vehicleType ||
+            "Registered Vehicle";
+
+          const dateStr = app.serviceDate
+            ? new Date(app.serviceDate).toLocaleDateString("en-GB", {
+                day: "2-digit",
+                month: "short",
+                year: "numeric",
+              })
+            : "Scheduled";
+
+          const liveBadge = srv?.status || app.status;
+
+          return (
+            <div
+              className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-3 backdrop-blur-[1px] sm:p-5"
+              onClick={() => !respondingItemId && setSelectedBookingId(null)}
+            >
+              <div
+                onClick={(e) => e.stopPropagation()}
+                className="flex max-h-[92vh] w-full max-w-3xl flex-col overflow-hidden rounded-2xl bg-white shadow-2xl"
+              >
+                {/* Sticky Navy Header */}
+                <div className="flex flex-wrap items-center justify-between gap-3 bg-[#13294b] px-5 py-4 text-white sm:px-6">
+                  <div className="flex flex-wrap items-center gap-3">
+                    <span className="rounded-md border-2 border-black bg-yellow-400 px-3 py-1 text-sm font-black tracking-widest text-black uppercase shadow-xs">
+                      {vSnap.registrationNo || "N/A"}
+                    </span>
+                    <div>
+                      <div className="flex flex-wrap items-center gap-2">
+                        <h2 className="text-base font-bold sm:text-lg">
+                          {vehicleTitle}
+                        </h2>
+                        <span className="rounded-full bg-white/15 px-2.5 py-0.5 text-[11px] font-semibold">
+                          {vSnap.vehicleType || "Vehicle"}
+                        </span>
+                      </div>
+                      <p className="mt-0.5 text-xs text-slate-300">
+                        {dateStr} at {app.serviceTime}
+                        {bay?.bayName
+                          ? ` · ${bay.bayName} (${bay.bayType})`
+                          : ""}
+                      </p>
+                    </div>
+                  </div>
+
+                  <div className="flex items-center gap-2.5">
+                    <span
+                      className={`inline-flex items-center gap-1.5 rounded-full px-3 py-1 text-xs font-bold ${
+                        SERVICE_STAGE_BADGE[liveBadge] ||
+                        BOOKING_STATUS_BADGE[liveBadge] ||
+                        "bg-white text-[#13294b]"
+                      }`}
+                    >
+                      <span className="h-2 w-2 animate-pulse rounded-full bg-current" />
+                      {liveBadge}
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() => setSelectedBookingId(null)}
+                      disabled={Boolean(respondingItemId)}
+                      aria-label="Close booking details modal"
+                      className="rounded-lg bg-white/10 px-2.5 py-1.5 text-xs font-bold text-white transition hover:bg-white/20 disabled:opacity-50"
+                    >
+                      ✕
+                    </button>
+                  </div>
+                </div>
+
+                {/* Scrollable Body */}
+                <div className="flex-1 space-y-5 overflow-y-auto p-5 sm:p-6">
+                  {modalFeedback.text && (
+                    <Alert
+                      type={modalFeedback.type || "success"}
+                      message={modalFeedback.text}
+                      onClose={() => setModalFeedback({ type: "", text: "" })}
+                    />
+                  )}
+
+                  {/* Section 1: Live Service Status Pipeline */}
+                  <div className="rounded-2xl border border-slate-200 bg-white p-4 sm:p-5">
+                    <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+                      <h3 className="text-sm font-bold text-[#13294b]">
+                        Live Vehicle Service Status
+                      </h3>
+                      {bay?.bayName && (
+                        <span className="rounded-full bg-blue-50 px-2.5 py-0.5 text-[11px] font-bold text-blue-800">
+                          Service Bay: {bay.bayName} ({bay.bayType})
+                        </span>
+                      )}
+                    </div>
+
+                    {progress.isCancelled ? (
+                      <p className="text-xs font-semibold text-red-600">
+                        ✕ This booking was cancelled.
+                      </p>
+                    ) : (
+                      <div className="flex items-start overflow-x-auto pb-1">
+                        {progress.steps.map((label, idx) => {
+                          const isDone = idx < progress.current;
+                          const isCurrent = idx === progress.current;
+                          const isLast = idx === progress.steps.length - 1;
+                          return (
+                            <div
+                              key={label}
+                              className={`flex items-start ${isLast ? "" : "flex-1"}`}
+                            >
+                              <div className="flex w-20 shrink-0 flex-col items-center text-center">
+                                <span
+                                  className={`flex h-7 w-7 items-center justify-center rounded-full text-xs font-bold ${
+                                    isDone
+                                      ? "bg-emerald-600 text-white"
+                                      : isCurrent
+                                        ? "bg-orange-600 text-white ring-4 ring-orange-100"
+                                        : "bg-slate-200 text-slate-400"
+                                  }`}
+                                >
+                                  {isDone ? "✓" : idx + 1}
+                                </span>
+                                <span
+                                  className={`mt-1.5 text-[11px] leading-tight ${
+                                    isCurrent
+                                      ? "font-bold text-[#13294b]"
+                                      : isDone
+                                        ? "font-semibold text-emerald-700"
+                                        : "text-slate-400"
+                                  }`}
+                                >
+                                  {label}
+                                </span>
+                              </div>
+                              {!isLast && (
+                                <span
+                                  className={`mt-3.5 h-0.5 min-w-4 flex-1 ${
+                                    isDone ? "bg-emerald-500" : "bg-slate-200"
+                                  }`}
+                                />
+                              )}
+                            </div>
+                          );
+                        })}
+                      </div>
+                    )}
+                  </div>
+
+                  {/* Section 2: Workshop Inspection Notes & Additional Repairs Approval */}
+                  {srv && (works.length > 0 || srv.inspectionNotes) && (
+                    <div
+                      className={`rounded-2xl border p-4 sm:p-5 ${
+                        pendingWorks.length > 0
+                          ? "border-amber-300 bg-amber-50/40"
+                          : "border-gray-200 bg-slate-50/60"
+                      }`}
+                    >
+                      <div className="flex flex-wrap items-start justify-between gap-2">
+                        <div>
+                          <h3 className="text-sm font-bold text-[#13294b]">
+                            Workshop Inspection &amp; Additional Repairs
+                          </h3>
+                          <p className="mt-0.5 text-xs text-slate-500">
+                            Approve or reject any extra issues or spare parts
+                            found by the workshop.
+                          </p>
+                        </div>
+                        {pendingWorks.length > 0 && (
+                          <span className="inline-flex items-center gap-1.5 rounded-full bg-amber-100 px-3 py-1 text-xs font-bold text-amber-900">
+                            <span className="h-2 w-2 animate-pulse rounded-full bg-amber-600" />
+                            Action Required ({pendingWorks.length})
+                          </span>
+                        )}
+                      </div>
+
+                      {srv.inspectionNotes && (
+                        <div className="mt-3 rounded-xl border border-slate-200 bg-white p-3 text-xs text-slate-700">
+                          <span className="font-bold text-[#13294b]">
+                            Technician Notes:{" "}
+                          </span>
+                          {srv.inspectionNotes}
+                        </div>
+                      )}
+
+                      {works.length > 0 && (
+                        <div className="mt-3 space-y-2.5">
+                          {works.map((item) => {
+                            const isPending =
+                              item.status === "Pending Approval";
+                            const isBusy = respondingItemId === item._id;
+
+                            return (
+                              <div
+                                key={item._id}
+                                className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-gray-200 bg-white p-3.5"
+                              >
+                                <div className="min-w-0 flex-1">
+                                  <div className="flex flex-wrap items-center gap-2">
+                                    <span className="text-xs font-bold text-[#13294b] sm:text-sm">
+                                      {item.title}
+                                    </span>
+                                    <span className="rounded bg-slate-100 px-1.5 py-0.5 text-[10px] font-semibold text-slate-600">
+                                      {item.category || "Repair"}
+                                    </span>
+                                    {!isPending && (
+                                      <span
+                                        className={`rounded-full px-2 py-0.5 text-[10px] font-bold ${
+                                          item.status === "Approved"
+                                            ? "bg-emerald-100 text-emerald-800"
+                                            : "bg-red-100 text-red-700"
+                                        }`}
+                                      >
+                                        {item.status === "Approved"
+                                          ? "✓ Approved"
+                                          : "✕ Rejected"}
+                                      </span>
+                                    )}
+                                  </div>
+                                  {item.description && (
+                                    <p className="mt-1 text-xs text-slate-500">
+                                      {item.description}
+                                    </p>
+                                  )}
+                                </div>
+
+                                <div className="flex flex-wrap items-center gap-3">
+                                  <span className="text-sm font-extrabold text-[#13294b]">
+                                    Rs.{" "}
+                                    {Number(
+                                      item.estimatedCost || 0,
+                                    ).toLocaleString()}
+                                  </span>
+
+                                  {isPending && (
+                                    <div className="flex items-center gap-2">
+                                      <button
+                                        type="button"
+                                        disabled={isBusy}
+                                        onClick={() =>
+                                          handleRespondAdditionalWork(
+                                            srv._id,
+                                            item._id,
+                                            "Approved",
+                                          )
+                                        }
+                                        className="rounded-lg bg-emerald-700 px-3 py-1.5 text-xs font-bold text-white transition hover:bg-emerald-800 disabled:opacity-50"
+                                      >
+                                        {isBusy ? "..." : "Approve ✓"}
+                                      </button>
+                                      <button
+                                        type="button"
+                                        disabled={isBusy}
+                                        onClick={() =>
+                                          handleRespondAdditionalWork(
+                                            srv._id,
+                                            item._id,
+                                            "Rejected",
+                                          )
+                                        }
+                                        className="rounded-lg border border-red-200 bg-white px-3 py-1.5 text-xs font-bold text-red-600 transition hover:bg-red-50 disabled:opacity-50"
+                                      >
+                                        Reject ✕
+                                      </button>
+                                    </div>
+                                  )}
+                                </div>
+                              </div>
+                            );
+                          })}
+                        </div>
+                      )}
+                    </div>
+                  )}
+
+                  {/* Section 3: Complete Vehicle, Logistics & Billing Details */}
+                  <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                    <div className="rounded-xl border border-gray-200 bg-slate-50/70 p-4">
+                      <p className="text-[11px] font-bold tracking-wider text-slate-500 uppercase">
+                        Vehicle &amp; Service Details
+                      </p>
+                      <dl className="mt-2.5 space-y-1.5 text-xs">
+                        <div className="flex justify-between gap-2">
+                          <dt className="text-slate-500">Registration No</dt>
+                          <dd className="font-bold text-[#13294b]">
+                            {vSnap.registrationNo || "—"}
+                          </dd>
+                        </div>
+                        <div className="flex justify-between gap-2">
+                          <dt className="text-slate-500">Brand / Model</dt>
+                          <dd className="text-right font-semibold text-[#13294b]">
+                            {vehicleTitle}
+                          </dd>
+                        </div>
+                        <div className="flex justify-between gap-2">
+                          <dt className="text-slate-500">Vehicle Type</dt>
+                          <dd className="font-medium text-slate-800">
+                            {vSnap.vehicleType || "—"}
+                          </dd>
+                        </div>
+                        <div className="flex justify-between gap-2">
+                          <dt className="text-slate-500">Package</dt>
+                          <dd className="text-right font-semibold text-orange-800">
+                            {pkg.packageName || "Service Package"}
+                          </dd>
+                        </div>
+                        {pkg.description && (
+                          <div className="rounded-lg bg-white px-2.5 py-1.5 text-[11px] text-slate-600">
+                            {pkg.description}
+                          </div>
+                        )}
+                        <div className="flex justify-between gap-2">
+                          <dt className="text-slate-500">Handover Mode</dt>
+                          <dd className="font-medium text-slate-800">
+                            {app.requiresPickup
+                              ? "Pickup & Delivery"
+                              : "Workshop Drop-off"}
+                          </dd>
+                        </div>
+                        {app.requiresPickup && app.pickupLocation?.address && (
+                          <p className="text-[11px] text-slate-500">
+                            📍 {app.pickupLocation.address}
+                          </p>
+                        )}
+                        {app.requiresPickup && pickup && (
+                          <div className="flex justify-between gap-2 border-t border-gray-200 pt-1.5">
+                            <dt className="text-slate-500">Pickup Status</dt>
+                            <dd className="font-semibold text-[#13294b]">
+                              {pickup.pickupStatus}
+                            </dd>
+                          </div>
+                        )}
+                        {driver && (
+                          <div className="flex justify-between gap-2">
+                            <dt className="text-slate-500">Driver</dt>
+                            <dd className="font-semibold text-[#13294b]">
+                              {driver.name} ({driver.contactNo})
+                            </dd>
+                          </div>
+                        )}
+                      </dl>
+                    </div>
+
+                    {/* Billing & Invoice Summary */}
+                    <div className="rounded-xl border border-gray-200 bg-slate-50/70 p-4">
+                      <div className="flex items-center justify-between gap-2">
+                        <p className="text-[11px] font-bold tracking-wider text-slate-500 uppercase">
+                          Invoice &amp; Cost Breakdown
+                        </p>
+                        {inv && (
+                          <span className="rounded-full bg-white px-2 py-0.5 text-[10px] font-bold text-[#13294b] shadow-2xs">
+                            {inv.invoiceStage}
+                          </span>
+                        )}
+                      </div>
+
+                      <dl className="mt-2.5 space-y-1.5 text-xs">
+                        <div className="flex justify-between gap-2">
+                          <dt className="text-slate-500">Service Package</dt>
+                          <dd className="font-medium text-slate-800">
+                            Rs.{" "}
+                            {Number(
+                              inv?.packageCharge ?? pkg.price ?? 0,
+                            ).toLocaleString()}
+                          </dd>
+                        </div>
+                        {app.requiresPickup && (
+                          <div className="flex justify-between gap-2">
+                            <dt className="text-slate-500">
+                              Pickup &amp; Delivery
+                            </dt>
+                            <dd className="font-medium text-slate-800">
+                              Rs.{" "}
+                              {Number(
+                                inv?.pickupDeliveryCharge ??
+                                  pickup?.charge ??
+                                  0,
+                              ).toLocaleString()}
+                            </dd>
+                          </div>
+                        )}
+                        <div className="flex justify-between gap-2">
+                          <dt className="text-slate-500">
+                            Approved Extra Repairs
+                          </dt>
+                          <dd className="font-medium text-emerald-700">
+                            Rs.{" "}
+                            {Number(
+                              inv?.additionalWorkCharge ?? 0,
+                            ).toLocaleString()}
+                          </dd>
+                        </div>
+
+                        <div className="flex items-center justify-between gap-2 border-t border-gray-200 pt-2">
+                          <dt className="font-bold text-[#13294b]">Total</dt>
+                          <dd className="text-sm font-extrabold text-[#13294b]">
+                            Rs.{" "}
+                            {Number(
+                              inv?.totalAmount ?? pkg.price ?? 0,
+                            ).toLocaleString()}
+                          </dd>
+                        </div>
+
+                        <div className="flex justify-between gap-2 pt-1">
+                          <dt className="text-slate-500">Payment Status</dt>
+                          <dd>
+                            <span
+                              className={`rounded-full px-2 py-0.5 text-[10px] font-bold ${
+                                inv?.paymentStatus === "Paid on Delivery"
+                                  ? "bg-emerald-100 text-emerald-800"
+                                  : "bg-amber-100 text-amber-800"
+                              }`}
+                            >
+                              {inv?.paymentStatus || "Unpaid"}
+                            </span>
+                          </dd>
+                        </div>
+                      </dl>
+                    </div>
+                  </div>
+
+                  {/* Section 4: Workshop Activity Timeline */}
+                  {logs.length > 0 && (
+                    <div className="rounded-2xl border border-gray-200 bg-white p-4">
+                      <p className="mb-2.5 text-[11px] font-bold tracking-wider text-slate-500 uppercase">
+                        Workshop Updates ({logs.length})
+                      </p>
+                      <div className="space-y-2">
+                        {[...logs].reverse().map((entry, idx) => (
+                          <div
+                            key={`${entry.stage}-${entry.updatedAt}-${idx}`}
+                            className="flex flex-wrap items-center justify-between gap-2 rounded-lg bg-slate-50 px-3 py-2 text-xs"
+                          >
+                            <div className="flex flex-wrap items-center gap-2">
+                              <span
+                                className={`rounded-full px-2 py-0.5 text-[10px] font-bold ${
+                                  SERVICE_STAGE_BADGE[entry.stage] ||
+                                  "bg-slate-200 text-slate-700"
+                                }`}
+                              >
+                                {entry.stage}
+                              </span>
+                              {entry.note && (
+                                <span className="text-slate-600">
+                                  {entry.note}
+                                </span>
+                              )}
+                            </div>
+                            <span className="text-[11px] text-slate-400">
+                              {formatDateTime(entry.updatedAt)}
+                            </span>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Footer */}
+                  <div className="flex justify-end border-t border-gray-100 pt-3">
+                    <button
+                      type="button"
+                      onClick={() => setSelectedBookingId(null)}
+                      disabled={Boolean(respondingItemId)}
+                      className="rounded-lg border border-gray-300 bg-white px-4 py-1.5 text-xs font-semibold text-slate-700 transition hover:bg-slate-50"
+                    >
+                      Close
+                    </button>
+                  </div>
+                </div>
+              </div>
+            </div>
+          );
+        })()}
     </div>
   );
 }
