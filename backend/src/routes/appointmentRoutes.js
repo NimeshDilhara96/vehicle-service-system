@@ -36,7 +36,7 @@ router.patch(
   appointmentController.updateAppointmentStatusAdmin,
 );
 
-// Calculate pickup fee via smartmap-pro
+// Calculate pickup fee via OSRM distance & server-side rates
 router.post(
   "/calculate-pickup-fee",
   restrictTo("Customer"),

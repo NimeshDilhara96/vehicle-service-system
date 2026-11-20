@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback, useMemo } from "react";
-import { SmartMap } from "smartmap-pro";
+import { SmartMap } from "../../components/map/SmartMap";
 import api from "../../services/api";
 import Input from "../../components/ui/Input";
 import Button from "../../components/ui/Button";

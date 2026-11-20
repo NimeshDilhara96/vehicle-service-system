@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { SmartMap } from "smartmap-pro";
+import { SmartMap } from "../../components/map/SmartMap";
 import { useAuth } from "../../context/AuthContext";
 import api from "../../services/api";
 import Vehicle from "./Vehicle";

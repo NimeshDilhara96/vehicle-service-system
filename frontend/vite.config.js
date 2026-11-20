@@ -6,9 +6,7 @@ import { defineConfig } from 'vite'
 export default defineConfig({
   plugins: [react(), tailwindcss()],
   optimizeDeps: {
-    force: true,
     include: ['leaflet', 'react-leaflet'],
-    exclude: ['smartmap-pro'],
   },
   server: {
     proxy: {

@@ -1,10 +1,59 @@
-const { calculateSecureFare } = require("smartmap-pro/server");
 const { checkOperationalZone } = require("../config/operationalZones");
 const {
   WORKSHOPS,
   getActiveWorkshops,
   findNearestWorkshop,
 } = require("../config/workshops");
+
+/**
+ * Fetches exact road distance from OSRM routing server and computes fare
+ * based on server-side vehicle pricing configuration.
+ */
+async function calculateSecureFare({
+  startCoords,
+  endCoords,
+  vehicleType,
+  rates,
+  osrmUrl,
+}) {
+  const activeOsrmUrl =
+    osrmUrl || "https://router.project-osrm.org/route/v1/driving";
+  const fetchUrl = `${activeOsrmUrl}/${startCoords[1]},${startCoords[0]};${endCoords[1]},${endCoords[0]}?overview=false`;
+
+  let distanceKm = 0;
+  try {
+    const response = await fetch(fetchUrl, {
+      signal: AbortSignal.timeout(8000),
+    });
+    const data = await response.json();
+
+    if (data.code !== "Ok" || !data.routes || data.routes.length === 0) {
+      throw new Error("Routing server failed to return a valid route.");
+    }
+
+    distanceKm = data.routes[0].distance / 1000;
+  } catch (err) {
+    throw new Error(`Failed to calculate secure distance: ${err.message}`);
+  }
+
+  const vehicleConfig = rates.vehicles?.[vehicleType];
+  if (!vehicleConfig) {
+    throw new Error(`Invalid vehicle type: ${vehicleType}`);
+  }
+
+  const { baseFare, costPerKm, baseDistanceKm = 0 } = vehicleConfig;
+  const rounding = rates.system?.distanceRounding || "NONE";
+
+  let billableDistance = Math.max(0, distanceKm - baseDistanceKm);
+  if (rounding === "UP") {
+    billableDistance = Math.ceil(billableDistance);
+  } else if (rounding === "DOWN") {
+    billableDistance = Math.floor(billableDistance);
+  }
+
+  const totalCost = baseFare + billableDistance * costPerKm;
+  return { totalCost, distanceKm };
+}
 
 // Default fallback workshop (Colombo Main Workshop)
 const WORKSHOP_COORDS = WORKSHOPS[0].coordinates;
@@ -80,5 +129,6 @@ module.exports = {
   getActiveWorkshops,
   findNearestWorkshop,
   validatePickupZone,
+  calculateSecureFare,
   calculateSecurePickupFare,
 };
