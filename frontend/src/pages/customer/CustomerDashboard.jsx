@@ -897,11 +897,10 @@ function CustomerDashboard() {
                     <div className="mb-3 flex items-center justify-between">
                       <div>
                         <h3 className="text-sm font-bold text-[#13294b]">
-                          Our Service Centres
+                          Our Service Centre
                         </h3>
                         <p className="text-xs text-slate-500">
-                          Colombo Main Workshop · Gampaha Branch · Kalutara
-                          Branch
+                          Colombo Main Workshop · Main Service Center, Colombo
                         </p>
                       </div>
                       <button

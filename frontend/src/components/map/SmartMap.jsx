@@ -33,18 +33,6 @@ const DEFAULT_WORKSHOPS = [
     address: "Main Service Center, Colombo, Sri Lanka",
     coordinates: [6.9271, 79.8612],
   },
-  {
-    id: "gampaha_branch",
-    name: "Gampaha Service Branch",
-    address: "Gampaha Service Center, Gampaha, Sri Lanka",
-    coordinates: [7.0873, 80.0144],
-  },
-  {
-    id: "kalutara_branch",
-    name: "Kalutara Service Branch",
-    address: "Kalutara Service Center, Kalutara, Sri Lanka",
-    coordinates: [6.5854, 79.9607],
-  },
 ];
 
 function createWorkshopPinIcon(label, isSelected = false) {
@@ -108,9 +96,22 @@ const userLocationPinIcon = L.divIcon({
   iconAnchor: [0, 0],
 });
 
-function createDriverCarIcon(label = "Driver On The Way", isReturning = false) {
-  const bg = isReturning ? "#059669" : "#13294b";
-  const ring = isReturning ? "rgba(5,150,105,0.3)" : "rgba(234,88,12,0.32)";
+function createDriverCarIcon(
+  label = "Driver On The Way",
+  direction = "to-workshop",
+) {
+  let bg = "#13294b";
+  let ring = "rgba(19,41,75,0.28)";
+  if (direction === "returning") {
+    bg = "#059669";
+    ring = "rgba(5,150,105,0.3)";
+  } else if (direction === "to-customer") {
+    bg = "#4f46e5";
+    ring = "rgba(79,70,229,0.3)";
+  } else if (direction === "to-workshop") {
+    bg = "#ea580c";
+    ring = "rgba(234,88,12,0.32)";
+  }
   return L.divIcon({
     className: "custom-driver-car-pin",
     html: `
@@ -118,7 +119,7 @@ function createDriverCarIcon(label = "Driver On The Way", isReturning = false) {
         <div style="background:${bg};color:#ffffff;border:2px solid #ffffff;border-radius:9999px;padding:3px 10px;font-size:10px;font-weight:800;white-space:nowrap;box-shadow:0 4px 10px rgba(0,0,0,0.35);margin-bottom:4px;">
           ${label}
         </div>
-        <div style="width:32px;height:32px;border-radius:50%;background:${bg};border:2.5px solid #ffffff;box-shadow:0 0 0 6px ${ring},0 3px 10px rgba(0,0,0,0.35);display:flex;align-items:center;justify-content:center;">
+        <div style="width:34px;height:34px;border-radius:50%;background:${bg};border:2.5px solid #ffffff;box-shadow:0 0 0 6px ${ring},0 3px 10px rgba(0,0,0,0.35);display:flex;align-items:center;justify-content:center;">
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#ffffff" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
             <path d="M5 17h14v-5l-2-5H7l-2 5v5z"></path>
             <circle cx="7.5" cy="17.5" r="1.5" fill="#ffffff"></circle>
@@ -175,6 +176,11 @@ function MapUpdater({ routePath, center }) {
   const centerLng = center ? center[1] : null;
 
   useEffect(() => {
+    const t = window.setTimeout(() => map.invalidateSize(), 150);
+    return () => window.clearTimeout(t);
+  }, [map]);
+
+  useEffect(() => {
     if (centerLat !== null && centerLng !== null) {
       map.flyTo([centerLat, centerLng], 12);
     }
@@ -199,8 +205,10 @@ export function SmartMap({
   center = [6.9271, 79.8612],
   userLocation = null,
   externalStartPoint = null,
+  externalEndPoint = null,
   driverTracking = null,
   readOnlyRoute = false,
+  mapHeight = "450px",
   showZoomControls = true,
   interactiveMap = true,
   showSearchBox = true,
@@ -213,10 +221,21 @@ export function SmartMap({
   const activeCenter =
     mode === "shop-location" && shopCoords ? shopCoords : center;
 
-  const [startPoint, setStartPoint] = useState(null);
-  const [endPoint, setEndPoint] = useState(
-    workshopList[0]?.coordinates || shopCoords,
-  );
+  const initialExtStart =
+    Array.isArray(externalStartPoint) && externalStartPoint.length === 2
+      ? externalStartPoint
+      : null;
+  const initialExtEnd =
+    Array.isArray(externalEndPoint) && externalEndPoint.length === 2
+      ? externalEndPoint
+      : initialExtStart
+        ? getNearestWorkshop(initialExtStart, workshopList)?.coordinates ||
+          workshopList[0]?.coordinates ||
+          shopCoords
+        : workshopList[0]?.coordinates || shopCoords;
+
+  const [startPoint, setStartPoint] = useState(initialExtStart);
+  const [endPoint, setEndPoint] = useState(initialExtEnd);
   const [routePath, setRoutePath] = useState([]);
   const [driverStepProgress, setDriverStepProgress] = useState(0);
   const [errorMessage, setErrorMessage] = useState(null);
@@ -225,7 +244,7 @@ export function SmartMap({
   const [searchResults, setSearchResults] = useState([]);
   const [isSearching, setIsSearching] = useState(false);
   const [detectedLiveCoords, setDetectedLiveCoords] = useState(null);
-  const [mapCenter, setMapCenter] = useState(activeCenter);
+  const [mapCenter, setMapCenter] = useState(initialExtStart || activeCenter);
 
   // Sync resetTrigger prop changes without setState-in-effect
   const [prevResetTrigger, setPrevResetTrigger] = useState(resetTrigger);
@@ -241,15 +260,20 @@ export function SmartMap({
     }
   }
 
-  // Sync externalStartPoint prop changes without setState-in-effect
+  // Sync externalStartPoint / externalEndPoint prop changes without setState-in-effect
   const extLat = Array.isArray(externalStartPoint)
     ? externalStartPoint[0]
     : null;
   const extLng = Array.isArray(externalStartPoint)
     ? externalStartPoint[1]
     : null;
-  const extKey =
-    extLat !== null && extLng !== null ? `${extLat},${extLng}` : null;
+  const extEndLat = Array.isArray(externalEndPoint)
+    ? externalEndPoint[0]
+    : null;
+  const extEndLng = Array.isArray(externalEndPoint)
+    ? externalEndPoint[1]
+    : null;
+  const extKey = `${extLat ?? ""},${extLng ?? ""}|${extEndLat ?? ""},${extEndLng ?? ""}`;
   const [prevExtKey, setPrevExtKey] = useState(extKey);
   if (extKey !== prevExtKey) {
     setPrevExtKey(extKey);
@@ -257,9 +281,13 @@ export function SmartMap({
       const coords = [extLat, extLng];
       setMapCenter(coords);
       setStartPoint(coords);
-      const nearest = getNearestWorkshop(coords, workshopList);
-      if (nearest) {
-        setEndPoint(nearest.coordinates);
+      if (extEndLat !== null && extEndLng !== null) {
+        setEndPoint([extEndLat, extEndLng]);
+      } else {
+        const nearest = getNearestWorkshop(coords, workshopList);
+        if (nearest) {
+          setEndPoint(nearest.coordinates);
+        }
       }
     }
   }
@@ -469,16 +497,18 @@ export function SmartMap({
       : routePath;
 
   const isDriverMoving = Boolean(
-    driverTracking?.active && displayedRoutePath.length > 1,
+    driverTracking?.active &&
+      driverTracking?.moving !== false &&
+      displayedRoutePath.length > 1,
   );
 
-  // Smoothly animate driver vehicle marker along the OSRM route when active
+  // Smoothly animate driver vehicle marker along the OSRM route when moving
   useEffect(() => {
     if (!isDriverMoving) return undefined;
 
     const timer = window.setInterval(() => {
       setDriverStepProgress((prev) => (prev >= 100 ? 0 : prev + 2));
-    }, 350);
+    }, 320);
 
     return () => window.clearInterval(timer);
   }, [isDriverMoving]);
@@ -486,6 +516,10 @@ export function SmartMap({
   const activeDriverMarkerPos = (() => {
     if (!driverTracking?.active) return null;
     if (displayedRoutePath.length > 1) {
+      // When Driver Assigned (preparing at workshop), show car at the workshop end of the route
+      if (driverTracking.direction === "at-workshop") {
+        return displayedRoutePath[displayedRoutePath.length - 1];
+      }
       const ratio = driverStepProgress / 100;
       const forwardIdx = Math.min(
         displayedRoutePath.length - 1,
@@ -504,6 +538,9 @@ export function SmartMap({
       driverTracking.coords.length === 2
     ) {
       return driverTracking.coords;
+    }
+    if (driverTracking.direction === "at-workshop" && endPoint) {
+      return endPoint;
     }
     return null;
   })();
@@ -632,7 +669,7 @@ export function SmartMap({
 
       <div
         style={{
-          height: "450px",
+          height: mapHeight,
           width: "100%",
           borderRadius: "12px",
           overflow: "hidden",
@@ -768,10 +805,19 @@ export function SmartMap({
                   color={
                     driverTracking?.direction === "returning"
                       ? "#059669"
-                      : "#ea580c"
+                      : driverTracking?.direction === "to-customer"
+                        ? "#4f46e5"
+                        : driverTracking?.direction === "at-workshop"
+                          ? "#13294b"
+                          : "#ea580c"
+                  }
+                  dashArray={
+                    driverTracking?.direction === "at-workshop"
+                      ? "8 8"
+                      : undefined
                   }
                   weight={5}
-                  opacity={0.85}
+                  opacity={0.88}
                 />
               )}
 
@@ -780,7 +826,7 @@ export function SmartMap({
                   position={activeDriverMarkerPos}
                   icon={createDriverCarIcon(
                     driverTracking?.label || "Driver On The Way",
-                    driverTracking?.direction === "returning",
+                    driverTracking?.direction || "to-workshop",
                   )}
                   zIndexOffset={1500}
                 >
