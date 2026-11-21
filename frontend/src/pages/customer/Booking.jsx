@@ -160,7 +160,7 @@ function Booking({ initialTab = "new", onNavigateToVehicles, onBookingsChange })
   const [successMsg, setSuccessMsg] = useState("");
 
   // Booking Details Popup Modal State (My Bookings)
-  const [bookingListFilter, setBookingListFilter] = useState("all"); // 'all' | 'active' | 'history'
+  const [bookingListFilter, setBookingListFilter] = useState("active"); // 'active' | 'history'
   const [selectedBookingId, setSelectedBookingId] = useState(null);
   const [respondingItemId, setRespondingItemId] = useState(null);
   const [refreshingList, setRefreshingList] = useState(false);
@@ -1125,18 +1125,13 @@ function Booking({ initialTab = "new", onNavigateToVehicles, onBookingsChange })
             (b) => !isBookingCurrentlyActive(b),
           );
           const filteredBookings =
-            bookingListFilter === "active"
-              ? activeBookings
-              : bookingListFilter === "history"
-                ? historyBookings
-                : bookings;
+            bookingListFilter === "history" ? historyBookings : activeBookings;
 
           return (
             <div className="space-y-3">
               <div className="flex flex-wrap items-center justify-between gap-2">
                 <div className="flex items-center gap-1.5 rounded-xl border border-gray-200 bg-white p-1">
                   {[
-                    { id: "all", label: "All", count: bookings.length },
                     {
                       id: "active",
                       label: "Active",
@@ -1152,7 +1147,7 @@ function Booking({ initialTab = "new", onNavigateToVehicles, onBookingsChange })
                       key={f.id}
                       type="button"
                       onClick={() => setBookingListFilter(f.id)}
-                      className={`rounded-lg px-3 py-1 text-xs font-bold transition ${
+                      className={`rounded-lg px-3.5 py-1 text-xs font-bold transition ${
                         bookingListFilter === f.id
                           ? "bg-[#13294b] text-white"
                           : "text-slate-600 hover:bg-slate-100"
@@ -1176,11 +1171,9 @@ function Booking({ initialTab = "new", onNavigateToVehicles, onBookingsChange })
               {filteredBookings.length === 0 ? (
                 <div className="rounded-2xl border border-dashed border-gray-300 bg-white p-10 text-center shadow-2xs">
                   <p className="text-sm font-semibold text-[#13294b]">
-                    {bookingListFilter === "active"
-                      ? "No active bookings right now"
-                      : bookingListFilter === "history"
-                        ? "No completed service history yet"
-                        : "No appointments booked yet"}
+                    {bookingListFilter === "history"
+                      ? "No completed service history yet"
+                      : "No active bookings right now"}
                   </p>
                   <p className="mt-1 text-xs text-slate-500">
                     {bookingListFilter === "history"
@@ -1190,79 +1183,113 @@ function Booking({ initialTab = "new", onNavigateToVehicles, onBookingsChange })
                 </div>
               ) : (
                 filteredBookings.map((app) => {
-              const vSnap = app.vehicleSnapshot || {};
-              const srv = app.service || null;
-              const bay = srv?.bayId || null;
-              const works = Array.isArray(srv?.additionalWorks)
-                ? srv.additionalWorks
-                : [];
-              const pendingCount = works.filter(
-                (w) => w.status === "Pending Approval",
-              ).length;
-              const progress = getCustomerBookingProgress(app);
+                  const isHistoryItem = bookingListFilter === "history";
+                  const vSnap = app.vehicleSnapshot || {};
+                  const srv = app.service || null;
+                  const bay = srv?.bayId || null;
+                  const works = Array.isArray(srv?.additionalWorks)
+                    ? srv.additionalWorks
+                    : [];
+                  const pendingCount = works.filter(
+                    (w) => w.status === "Pending Approval",
+                  ).length;
+                  const progress = getCustomerBookingProgress(app);
 
-              const dateStr = app.serviceDate
-                ? new Date(app.serviceDate).toLocaleDateString("en-GB", {
-                    day: "2-digit",
-                    month: "short",
-                    year: "numeric",
-                  })
-                : "Scheduled";
+                  const dateStr = app.serviceDate
+                    ? new Date(app.serviceDate).toLocaleDateString("en-GB", {
+                        day: "2-digit",
+                        month: "short",
+                        year: "numeric",
+                      })
+                    : "Scheduled";
 
-              const vehicleTitle =
-                [vSnap.brand, vSnap.modelName].filter(Boolean).join(" ") ||
-                vSnap.vehicleType ||
-                "Registered Vehicle";
+                  const vehicleTitle =
+                    [vSnap.brand, vSnap.modelName].filter(Boolean).join(" ") ||
+                    vSnap.vehicleType ||
+                    "Registered Vehicle";
 
-              let leftAccent = "border-l-slate-300";
-              if (app.status === "Cancelled") leftAccent = "border-l-red-400";
-              else if (app.status === "Completed")
-                leftAccent = "border-l-emerald-500";
-              else if (pendingCount > 0) leftAccent = "border-l-amber-500";
-              else if (app.status === "In Progress")
-                leftAccent = "border-l-blue-600";
-              else if (app.status === "Confirmed")
-                leftAccent = "border-l-orange-500";
+                  let leftAccent = "border-l-slate-300";
+                  if (isHistoryItem) {
+                    leftAccent =
+                      app.status === "Cancelled"
+                        ? "border-l-slate-300"
+                        : "border-l-slate-300";
+                  } else if (pendingCount > 0) {
+                    leftAccent = "border-l-amber-500";
+                  } else if (app.status === "In Progress") {
+                    leftAccent = "border-l-blue-600";
+                  } else if (app.status === "Confirmed") {
+                    leftAccent = "border-l-orange-500";
+                  }
 
-              return (
-                <div
-                  key={app._id}
-                  role="button"
-                  tabIndex={0}
-                  onClick={() => {
-                    setSelectedBookingId(app._id);
-                    setModalFeedback({ type: "", text: "" });
-                  }}
-                  onKeyDown={(e) => {
-                    if (e.key === "Enter" || e.key === " ") {
-                      e.preventDefault();
-                      setSelectedBookingId(app._id);
-                      setModalFeedback({ type: "", text: "" });
-                    }
-                  }}
-                  className={`group cursor-pointer overflow-hidden rounded-xl border border-gray-200 border-l-4 ${leftAccent} bg-white shadow-2xs transition hover:border-orange-300 hover:shadow-sm focus:ring-2 focus:ring-orange-400 focus:outline-none`}
-                >
-                  {/* Top Horizontal Bar */}
-                  <div className="flex flex-col gap-3 px-4 py-3.5 transition group-hover:bg-orange-50/20 lg:flex-row lg:items-center lg:justify-between">
-                    <div className="flex min-w-0 flex-1 items-center gap-3.5">
-                      <span className="shrink-0 rounded border-2 border-black bg-yellow-400 px-2.5 py-1 text-xs font-extrabold tracking-widest text-black uppercase">
-                        {vSnap.registrationNo || "Vehicle"}
-                      </span>
-
-                      <div className="min-w-0 flex-1">
-                        <div className="flex flex-wrap items-center gap-2">
-                          <h3 className="truncate text-sm font-bold text-[#13294b] group-hover:text-orange-700">
-                            {vehicleTitle}
-                          </h3>
-                          <span className="hidden text-slate-300 sm:inline">
-                            ·
+                  return (
+                    <div
+                      key={app._id}
+                      role="button"
+                      tabIndex={0}
+                      onClick={() => {
+                        setSelectedBookingId(app._id);
+                        setModalFeedback({ type: "", text: "" });
+                      }}
+                      onKeyDown={(e) => {
+                        if (e.key === "Enter" || e.key === " ") {
+                          e.preventDefault();
+                          setSelectedBookingId(app._id);
+                          setModalFeedback({ type: "", text: "" });
+                        }
+                      }}
+                      className={`group cursor-pointer overflow-hidden rounded-xl border border-gray-200 border-l-4 ${leftAccent} shadow-2xs transition focus:ring-2 focus:ring-orange-400 focus:outline-none ${
+                        isHistoryItem
+                          ? "bg-slate-50/80 opacity-75 hover:border-slate-300 hover:bg-white hover:opacity-100"
+                          : "bg-white hover:border-orange-300 hover:shadow-sm"
+                      }`}
+                    >
+                      {/* Top Horizontal Bar */}
+                      <div
+                        className={`flex flex-col gap-3 px-4 py-3.5 transition lg:flex-row lg:items-center lg:justify-between ${
+                          isHistoryItem
+                            ? "group-hover:bg-slate-50/50"
+                            : "group-hover:bg-orange-50/20"
+                        }`}
+                      >
+                        <div className="flex min-w-0 flex-1 items-center gap-3.5">
+                          <span
+                            className={`shrink-0 rounded border-2 px-2.5 py-1 text-xs font-extrabold tracking-widest uppercase ${
+                              isHistoryItem
+                                ? "border-slate-400 bg-slate-200/80 text-slate-700"
+                                : "border-black bg-yellow-400 text-black"
+                            }`}
+                          >
+                            {vSnap.registrationNo || "Vehicle"}
                           </span>
-                          <span className="truncate text-xs font-medium text-slate-600">
-                            {app.packageId?.packageName || "Service Package"}
-                          </span>
-                        </div>
-                        <div className="mt-0.5 flex flex-wrap items-center gap-x-2.5 gap-y-0.5 text-[11px] text-slate-500">
-                          <span className="font-semibold text-orange-700">
+
+                          <div className="min-w-0 flex-1">
+                            <div className="flex flex-wrap items-center gap-2">
+                              <h3
+                                className={`truncate text-sm font-bold ${
+                                  isHistoryItem
+                                    ? "text-slate-700"
+                                    : "text-[#13294b] group-hover:text-orange-700"
+                                }`}
+                              >
+                                {vehicleTitle}
+                              </h3>
+                              <span className="hidden text-slate-300 sm:inline">
+                                ·
+                              </span>
+                              <span className="truncate text-xs font-medium text-slate-500">
+                                {app.packageId?.packageName ||
+                                  "Service Package"}
+                              </span>
+                            </div>
+                            <div className="mt-0.5 flex flex-wrap items-center gap-x-2.5 gap-y-0.5 text-[11px] text-slate-500">
+                              <span
+                                className={
+                                  isHistoryItem
+                                    ? "font-medium text-slate-500"
+                                    : "font-semibold text-orange-700"
+                                }
+                              >
                             {dateStr} at {app.serviceTime}
                           </span>
                           <span
@@ -1335,14 +1362,16 @@ function Booking({ initialTab = "new", onNavigateToVehicles, onBookingsChange })
                   {/* Live Status Progress Strip Below Each Booking Bar */}
                   <div className="border-t border-gray-100 bg-slate-50/70 px-4 py-2.5">
                     {progress.isCancelled ? (
-                      <p className="text-[11px] font-semibold text-red-600">
+                      <p className="text-[11px] font-semibold text-slate-500">
                         ✕ This booking was cancelled
                       </p>
                     ) : (
                       <div className="flex items-start overflow-x-auto">
                         {progress.steps.map((label, idx) => {
-                          const isDone = idx < progress.current;
-                          const isCurrent = idx === progress.current;
+                          const isDone =
+                            isHistoryItem || idx < progress.current;
+                          const isCurrent =
+                            !isHistoryItem && idx === progress.current;
                           const isLast = idx === progress.steps.length - 1;
                           return (
                             <div
@@ -1352,22 +1381,26 @@ function Booking({ initialTab = "new", onNavigateToVehicles, onBookingsChange })
                               <div className="flex w-16 shrink-0 flex-col items-center text-center">
                                 <span
                                   className={`flex h-5 w-5 items-center justify-center rounded-full text-[10px] font-bold ${
-                                    isDone
-                                      ? "bg-emerald-600 text-white"
-                                      : isCurrent
-                                        ? "bg-orange-700 text-white ring-4 ring-orange-100"
-                                        : "bg-slate-200 text-slate-400"
+                                    isHistoryItem
+                                      ? "bg-slate-400 text-white"
+                                      : isDone
+                                        ? "bg-emerald-600 text-white"
+                                        : isCurrent
+                                          ? "bg-orange-700 text-white ring-4 ring-orange-100"
+                                          : "bg-slate-200 text-slate-400"
                                   }`}
                                 >
                                   {isDone ? "✓" : idx + 1}
                                 </span>
                                 <span
                                   className={`mt-1 text-[10px] leading-tight ${
-                                    isCurrent
-                                      ? "font-bold text-orange-700"
-                                      : isDone
-                                        ? "font-medium text-emerald-700"
-                                        : "text-slate-400"
+                                    isHistoryItem
+                                      ? "font-medium text-slate-500"
+                                      : isCurrent
+                                        ? "font-bold text-orange-700"
+                                        : isDone
+                                          ? "font-medium text-emerald-700"
+                                          : "text-slate-400"
                                   }`}
                                 >
                                   {label}
@@ -1376,7 +1409,11 @@ function Booking({ initialTab = "new", onNavigateToVehicles, onBookingsChange })
                               {!isLast && (
                                 <span
                                   className={`mt-2.5 h-0.5 min-w-4 flex-1 ${
-                                    isDone ? "bg-emerald-500" : "bg-slate-200"
+                                    isHistoryItem
+                                      ? "bg-slate-300"
+                                      : isDone
+                                        ? "bg-emerald-500"
+                                        : "bg-slate-200"
                                   }`}
                                 />
                               )}
