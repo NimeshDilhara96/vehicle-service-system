@@ -15,12 +15,12 @@ const {
   formatZodError,
 } = require("../validators/driverValidator");
 
-// Incomplete pickup/delivery statuses
+// Active in-progress driver legs (driver is busy ONLY during active pickup or active return delivery;
+// delivering to the workshop finishes the pickup trip and frees the driver immediately!)
 const ACTIVE_PICKUP_STATUSES = [
   "Driver Assigned",
   "En Route to Pickup",
   "Vehicle Picked Up",
-  "Delivered to Workshop",
   "Out for Return Delivery",
 ];
 
@@ -174,21 +174,41 @@ exports.getAllDrivers = async (req, res, next) => {
   }
 };
 
-// 2. Get only available drivers (isAvailable: true, isDeleted: false)
+// 2. Get only available drivers who have NO active incomplete trip (isAvailable: true, isDeleted: false)
 exports.getAvailableDrivers = async (req, res, next) => {
   try {
-    const drivers = await Driver.find({
-      isDeleted: false,
-      isAvailable: true,
-    })
-      .populate("userId", "name email isActive")
-      .sort({ name: 1 })
-      .lean();
+    const [drivers, activeTrips] = await Promise.all([
+      Driver.find({
+        isDeleted: false,
+        isAvailable: true,
+      })
+        .populate("userId", "name email isActive")
+        .sort({ name: 1 })
+        .lean(),
+      PickupDelivery.find({
+        pickupStatus: { $in: ACTIVE_PICKUP_STATUSES },
+        driverId: { $ne: null },
+      })
+        .select("driverId")
+        .lean(),
+    ]);
+
+    const busyDriverIds = new Set(
+      activeTrips.map((t) => t.driverId.toString()),
+    );
+
+    const freeDrivers = drivers.filter((d) => {
+      if (busyDriverIds.has(d._id.toString())) return false;
+      if (d.userId?._id && busyDriverIds.has(d.userId._id.toString())) {
+        return false;
+      }
+      return true;
+    });
 
     res.status(200).json({
       success: true,
-      count: drivers.length,
-      drivers,
+      count: freeDrivers.length,
+      drivers: freeDrivers,
     });
   } catch (error) {
     next(error);
@@ -659,29 +679,95 @@ exports.getDriverTaskLogs = async (req, res, next) => {
   }
 };
 
-// 7. Assign a driver to an appointment's PickupDelivery task validated with Zod (assignTaskSchema)
+// 7. Assign a driver to an appointment's PickupDelivery task (strictly 1 active trip per driver at a time)
 exports.assignDriverToTask = async (req, res, next) => {
+  const { id } = req.params;
+  if (!mongoose.Types.ObjectId.isValid(id)) {
+    return res.status(400).json({ message: "Invalid driver ID." });
+  }
+
+  const parsed = assignTaskSchema.safeParse(req.body || {});
+  if (!parsed.success) {
+    return res.status(400).json({ message: formatZodError(parsed.error) });
+  }
+
+  const { appointmentId, note } = parsed.data;
+
+  const session = await mongoose.startSession();
+  session.startTransaction();
+
   try {
-    const { id } = req.params;
-    if (!mongoose.Types.ObjectId.isValid(id)) {
-      return res.status(400).json({ message: "Invalid driver ID." });
-    }
-
-    const parsed = assignTaskSchema.safeParse(req.body || {});
-    if (!parsed.success) {
-      return res.status(400).json({ message: formatZodError(parsed.error) });
-    }
-
-    const { appointmentId, note } = parsed.data;
-
-    const driver = await Driver.findOne({ _id: id, isDeleted: false }).lean();
+    const driver = await Driver.findOne({ _id: id, isDeleted: false })
+      .session(session)
+      .lean();
     if (!driver) {
+      await session.abortTransaction();
       return res.status(404).json({ message: "Driver not found." });
     }
 
+    // Check whether this driver already has any active/incomplete trip
+    const lookupIds = [driver._id];
+    if (driver.userId) lookupIds.push(driver.userId);
+
+    const existingActiveTrip = await PickupDelivery.findOne({
+      driverId: { $in: lookupIds },
+      pickupStatus: { $in: ACTIVE_PICKUP_STATUSES },
+      appointmentId: { $ne: appointmentId },
+    })
+      .populate("appointmentId", "vehicleSnapshot")
+      .session(session)
+      .lean();
+
+    if (existingActiveTrip) {
+      await session.abortTransaction();
+      const activePlate =
+        existingActiveTrip.appointmentId?.vehicleSnapshot?.registrationNo ||
+        "another vehicle";
+      return res.status(409).json({
+        message: `Driver ${driver.name} is currently assigned to ${activePlate} (${existingActiveTrip.pickupStatus}). That trip must be completed before assigning a new one.`,
+      });
+    }
+
+    // Atomically mark driver unavailable to prevent concurrent double-assignment race conditions
+    const claimedDriver = await Driver.findOneAndUpdate(
+      { _id: driver._id, isDeleted: false, isAvailable: true },
+      { $set: { isAvailable: false } },
+      { returnDocument: "after", session },
+    );
+
+    if (!claimedDriver) {
+      await session.abortTransaction();
+      return res.status(409).json({
+        message: `Driver ${driver.name} is currently unavailable or already on an active trip.`,
+      });
+    }
+
+    const targetTask = await PickupDelivery.findOne({ appointmentId })
+      .select("pickupStatus")
+      .session(session)
+      .lean();
+
+    if (!targetTask) {
+      await session.abortTransaction();
+      return res.status(404).json({
+        message: "Pickup & delivery record not found for this appointment.",
+      });
+    }
+
+    // If vehicle is already at the workshop (after service), assigning a driver starts Return Delivery
+    const isReturnAssignment =
+      targetTask.pickupStatus === "Delivered to Workshop";
+    const nextAssignedStatus = isReturnAssignment
+      ? "Out for Return Delivery"
+      : "Driver Assigned";
+
     const logEntry = {
-      status: "Driver Assigned",
-      note: note || `Assigned to driver ${driver.name} (${driver.licenseNo})`,
+      status: nextAssignedStatus,
+      note:
+        note ||
+        (isReturnAssignment
+          ? `Assigned return delivery to driver ${driver.name} (${driver.licenseNo})`
+          : `Assigned pickup to driver ${driver.name} (${driver.licenseNo})`),
       updatedByRole: req.user?.role || "Admin",
       updatedByName: String(req.user?.name || "Admin").slice(0, 100),
       timestamp: new Date(),
@@ -692,7 +778,7 @@ exports.assignDriverToTask = async (req, res, next) => {
       {
         $set: {
           driverId: driver._id,
-          pickupStatus: "Driver Assigned",
+          pickupStatus: nextAssignedStatus,
           assignedAt: new Date(),
         },
         $push: {
@@ -702,24 +788,25 @@ exports.assignDriverToTask = async (req, res, next) => {
           },
         },
       },
-      { returnDocument: "after", runValidators: true },
+      { returnDocument: "after", runValidators: true, session },
     )
       .populate("driverId", "name contactNo licenseNo photograph")
       .lean();
 
-    if (!updatedTask) {
-      return res.status(404).json({
-        message: "Pickup & delivery record not found for this appointment.",
-      });
-    }
+    await session.commitTransaction();
 
     res.status(200).json({
       success: true,
-      message: `Driver ${driver.name} assigned to pickup task.`,
+      message: isReturnAssignment
+        ? `Driver ${driver.name} assigned for return delivery.`
+        : `Driver ${driver.name} assigned to pickup task.`,
       pickupDelivery: updatedTask,
     });
   } catch (error) {
+    await session.abortTransaction();
     next(error);
+  } finally {
+    session.endSession();
   }
 };
 
@@ -826,12 +913,28 @@ exports.updatePickupTaskStatus = async (req, res, next) => {
       return res.status(404).json({ message: "Pickup task not found." });
     }
 
-    // When vehicle is Delivered to Customer, mark Appointment as Completed
+    // When vehicle is Delivered to Customer, mark Appointment as Completed and release the driver for new trips
     const appId = populated.appointmentId?._id || populated.appointmentId;
     let autoAllocatedBayName = null;
 
-    if (pickupStatus === "Delivered to Customer" && appId) {
-      await Appointment.findByIdAndUpdate(appId, { status: "Completed" });
+    if (pickupStatus === "Delivered to Customer") {
+      if (appId) {
+        await Appointment.findByIdAndUpdate(appId, { status: "Completed" });
+      }
+      const assignedDrvId = populated.driverId?._id || populated.driverId;
+      if (assignedDrvId) {
+        const remainingActive = await PickupDelivery.countDocuments({
+          driverId: assignedDrvId,
+          pickupStatus: { $in: ACTIVE_PICKUP_STATUSES },
+        });
+        if (remainingActive === 0) {
+          await Driver.findOneAndUpdate(
+            { _id: assignedDrvId, isDeleted: false },
+            { $set: { isAvailable: true } },
+            { returnDocument: "after" },
+          );
+        }
+      }
     } else if (pickupStatus === "Delivered to Workshop" && appId) {
       // Auto-allocate the first available Service Bay atomically inside a transaction
       const bayCount = await ServiceBay.countDocuments({});
@@ -913,6 +1016,22 @@ exports.updatePickupTaskStatus = async (req, res, next) => {
         throw bayErr;
       } finally {
         baySession.endSession();
+      }
+
+      // Pickup trip ends upon handing the vehicle to the workshop — immediately free the driver for other trips!
+      const pickupDrvId = populated.driverId?._id || populated.driverId;
+      if (pickupDrvId) {
+        const remainingActive = await PickupDelivery.countDocuments({
+          driverId: pickupDrvId,
+          pickupStatus: { $in: ACTIVE_PICKUP_STATUSES },
+        });
+        if (remainingActive === 0) {
+          await Driver.findOneAndUpdate(
+            { _id: pickupDrvId, isDeleted: false },
+            { $set: { isAvailable: true } },
+            { returnDocument: "after" },
+          );
+        }
       }
     }
 

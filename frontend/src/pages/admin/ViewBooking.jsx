@@ -512,6 +512,13 @@ function ViewBooking({ onOpenDispatch, onOpenBayControl }) {
               (!app.requiresPickup ||
                 pickup?.pickupStatus === "Delivered to Workshop");
 
+            const needsReturnDriver =
+              app.requiresPickup &&
+              app.service?.status === "Completed" &&
+              pickup?.pickupStatus === "Delivered to Workshop" &&
+              app.status !== "Completed" &&
+              app.status !== "Cancelled";
+
             const vehicleTitle =
               [vSnap.brand, vSnap.modelName].filter(Boolean).join(" ") ||
               vSnap.vehicleType ||
@@ -590,6 +597,12 @@ function ViewBooking({ onOpenDispatch, onOpenBayControl }) {
                         <span className="inline-flex shrink-0 items-center gap-1 rounded-full bg-amber-100 px-2.5 py-0.5 text-[10px] font-bold text-amber-900">
                           <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-amber-600" />
                           Assign Driver
+                        </span>
+                      )}
+                      {needsReturnDriver && (
+                        <span className="inline-flex shrink-0 items-center gap-1 rounded-full bg-emerald-100 px-2.5 py-0.5 text-[10px] font-bold text-emerald-900">
+                          <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-emerald-600" />
+                          Assign Return Driver
                         </span>
                       )}
                       {readyForBay && (
@@ -716,6 +729,13 @@ function ViewBooking({ onOpenDispatch, onOpenBayControl }) {
           const needsDriver =
             activeApp.requiresPickup &&
             !assignedDriver &&
+            activeApp.status !== "Cancelled" &&
+            activeApp.status !== "Completed";
+
+          const needsReturnDriver =
+            activeApp.requiresPickup &&
+            activeApp.service?.status === "Completed" &&
+            pickup?.pickupStatus === "Delivered to Workshop" &&
             activeApp.status !== "Cancelled" &&
             activeApp.status !== "Completed";
 
@@ -1007,38 +1027,57 @@ function ViewBooking({ onOpenDispatch, onOpenBayControl }) {
                     </div>
                   )}
 
-                  {/* Section 4: Assign Driver (when pickup needs driver) */}
-                  {needsDriver && (
-                    <div className="rounded-2xl border border-amber-200 bg-amber-50/60 p-4">
+                  {/* Section 4: Assign Driver (for Pickup OR for Return Delivery after service finishes) */}
+                  {(needsDriver || needsReturnDriver) && (
+                    <div
+                      className={`rounded-2xl border p-4 ${
+                        needsReturnDriver
+                          ? "border-emerald-200 bg-emerald-50/60"
+                          : "border-amber-200 bg-amber-50/60"
+                      }`}
+                    >
                       <p className="text-xs font-bold text-[#13294b]">
-                        Assign Pickup Driver
+                        {needsReturnDriver
+                          ? "Assign Return Delivery Driver"
+                          : "Assign Pickup Driver"}
                       </p>
                       <p className="mt-0.5 text-[11px] text-slate-600">
-                        Select an available driver to dispatch for this
-                        vehicle&apos;s pickup.
+                        {needsReturnDriver
+                          ? "Workshop service is complete! Choose any available driver to deliver the vehicle back to the customer."
+                          : "Select an available driver (drivers with an active trip cannot take a new booking until finished)."}
                       </p>
-                      <div className="mt-3 flex flex-wrap items-center gap-2">
-                        <select
-                          value={selectedDriverId}
-                          onChange={(e) => setSelectedDriverId(e.target.value)}
-                          className="min-w-[220px] flex-1 rounded-lg border border-gray-300 bg-white px-3 py-2 text-xs text-gray-900 outline-none focus:border-orange-700"
-                        >
-                          <option value="">Select Available Driver...</option>
-                          {availableDrivers.map((d) => (
-                            <option key={d._id} value={d._id}>
-                              {d.name} ({d.contactNo})
-                            </option>
-                          ))}
-                        </select>
-                        <button
-                          type="button"
-                          disabled={isAssigning || !selectedDriverId}
-                          onClick={() => handleAssignDriver(activeApp._id)}
-                          className="rounded-lg bg-[#13294b] px-4 py-2 text-xs font-bold text-white transition hover:bg-[#1a3660] disabled:opacity-50"
-                        >
-                          {isAssigning ? "Assigning..." : "Assign Driver"}
-                        </button>
-                      </div>
+                      {availableDrivers.length === 0 ? (
+                        <p className="mt-2.5 rounded-lg bg-white px-3 py-2 text-xs font-semibold text-amber-800">
+                          All drivers are currently busy on active trips. A
+                          driver will appear here once they complete their
+                          current delivery.
+                        </p>
+                      ) : (
+                        <div className="mt-3 flex flex-wrap items-center gap-2">
+                          <select
+                            value={selectedDriverId}
+                            onChange={(e) =>
+                              setSelectedDriverId(e.target.value)
+                            }
+                            className="min-w-[220px] flex-1 rounded-lg border border-gray-300 bg-white px-3 py-2 text-xs text-gray-900 outline-none focus:border-orange-700"
+                          >
+                            <option value="">Select Available Driver...</option>
+                            {availableDrivers.map((d) => (
+                              <option key={d._id} value={d._id}>
+                                {d.name} ({d.contactNo})
+                              </option>
+                            ))}
+                          </select>
+                          <button
+                            type="button"
+                            disabled={isAssigning || !selectedDriverId}
+                            onClick={() => handleAssignDriver(activeApp._id)}
+                            className="rounded-lg bg-[#13294b] px-4 py-2 text-xs font-bold text-white transition hover:bg-[#1a3660] disabled:opacity-50"
+                          >
+                            {isAssigning ? "Assigning..." : "Assign Driver"}
+                          </button>
+                        </div>
+                      )}
                     </div>
                   )}
 

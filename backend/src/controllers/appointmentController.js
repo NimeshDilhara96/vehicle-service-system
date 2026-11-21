@@ -577,27 +577,56 @@ exports.getAllAppointmentsAdmin = async (req, res, next) => {
     const appointmentIds = appointments.map((a) => a._id);
 
     // Parallel batch fetch (avoids N+1 queries)
-    const [invoices, services, pickups, availableDrivers, availableBays] =
-      await Promise.all([
-        Invoice.find({ appointmentId: { $in: appointmentIds } }).lean(),
-        Service.find({ appointmentId: { $in: appointmentIds } })
-          .populate("bayId", "bayName bayType isAvailable")
-          .lean(),
-        PickupDelivery.find({ appointmentId: { $in: appointmentIds } })
-          .populate(
-            "driverId",
-            "name contactNo licenseNo photograph isAvailable",
-          )
-          .lean(),
-        Driver.find({ isDeleted: false, isAvailable: true })
-          .select("name contactNo licenseNo photograph isAvailable")
-          .sort({ name: 1 })
-          .lean(),
-        ServiceBay.find({ isAvailable: true })
-          .select("bayName bayType isAvailable")
-          .sort({ bayName: 1 })
-          .lean(),
-      ]);
+    const [
+      invoices,
+      services,
+      pickups,
+      rawAvailableDrivers,
+      activeDriverTrips,
+      availableBays,
+    ] = await Promise.all([
+      Invoice.find({ appointmentId: { $in: appointmentIds } }).lean(),
+      Service.find({ appointmentId: { $in: appointmentIds } })
+        .populate("bayId", "bayName bayType isAvailable")
+        .lean(),
+      PickupDelivery.find({ appointmentId: { $in: appointmentIds } })
+        .populate(
+          "driverId",
+          "name contactNo licenseNo photograph isAvailable",
+        )
+        .lean(),
+      Driver.find({ isDeleted: false, isAvailable: true })
+        .select("userId name contactNo licenseNo photograph isAvailable")
+        .sort({ name: 1 })
+        .lean(),
+      PickupDelivery.find({
+        pickupStatus: {
+          $in: [
+            "Driver Assigned",
+            "En Route to Pickup",
+            "Vehicle Picked Up",
+            "Out for Return Delivery",
+          ],
+        },
+        driverId: { $ne: null },
+      })
+        .select("driverId")
+        .lean(),
+      ServiceBay.find({ isAvailable: true })
+        .select("bayName bayType isAvailable")
+        .sort({ bayName: 1 })
+        .lean(),
+    ]);
+
+    // Strictly exclude any driver who currently has an active trip (1 active trip per driver rule)
+    const busyDriverIds = new Set(
+      activeDriverTrips.map((t) => t.driverId.toString()),
+    );
+    const availableDrivers = rawAvailableDrivers.filter((d) => {
+      if (busyDriverIds.has(d._id.toString())) return false;
+      if (d.userId && busyDriverIds.has(d.userId.toString())) return false;
+      return true;
+    });
 
     const invoiceMap = {};
     for (const inv of invoices) {
