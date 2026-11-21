@@ -776,7 +776,7 @@ function DriverDashboard() {
       {/* SLIDE-OVER TRIPS & HISTORY DRAWER */}
       {showTripsDrawer && (
         <div
-          className="fixed inset-0 z-[1100] flex justify-end bg-black/45 backdrop-blur-[1px]"
+          className="fixed inset-0 z-1100 flex justify-end bg-black/45 backdrop-blur-[1px]"
           onClick={() => setShowTripsDrawer(false)}
         >
           <div
@@ -883,7 +883,7 @@ function DriverDashboard() {
       {/* PROFILE MODAL */}
       {showProfileModal && (
         <div
-          className="fixed inset-0 z-[1100] flex items-center justify-center bg-black/50 p-4 backdrop-blur-[1px]"
+          className="fixed inset-0 z-1100 flex items-center justify-center bg-black/50 p-4 backdrop-blur-[1px]"
           onClick={() => setShowProfileModal(false)}
         >
           <div
