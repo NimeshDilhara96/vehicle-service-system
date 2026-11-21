@@ -481,7 +481,7 @@ function DriverDashboard() {
       </MapContainer>
 
       {/* FLOATING TOP HUD BAR */}
-      <div className="pointer-events-none fixed inset-x-0 top-0 z-[1000] flex items-start justify-between gap-2 p-3 sm:p-4">
+      <div className="pointer-events-none fixed inset-x-0 top-0 z-1000 flex items-start justify-between gap-2 p-3 sm:p-4">
         {/* Top-Left: Driver Avatar & Online Pill */}
         <button
           type="button"
@@ -492,7 +492,7 @@ function DriverDashboard() {
             {displayName.charAt(0).toUpperCase()}
           </span>
           <div className="text-left leading-tight">
-            <p className="max-w-[120px] truncate text-xs font-bold text-slate-900">
+            <p className="max-w-30 truncate text-xs font-bold text-slate-900">
               {displayName}
             </p>
             <p className="flex items-center gap-1 text-[10px] font-bold text-emerald-600">
@@ -563,7 +563,7 @@ function DriverDashboard() {
 
       {/* FLOATING TOAST NOTIFICATION */}
       {toast.text && (
-        <div className="fixed top-18 left-1/2 z-[1050] w-[92%] max-w-md -translate-x-1/2">
+        <div className="fixed top-18 left-1/2 z-1050 w-[92%] max-w-md -translate-x-1/2">
           <div
             className={`flex items-center justify-between gap-3 rounded-2xl px-4 py-3 text-xs font-bold shadow-2xl ${
               toast.type === "error"
@@ -584,7 +584,7 @@ function DriverDashboard() {
       )}
 
       {/* UBER-STYLE FLOATING BOTTOM TRIP SHEET */}
-      <div className="pointer-events-none fixed inset-x-0 bottom-0 z-[1000] flex justify-center p-3 sm:p-5">
+      <div className="pointer-events-none fixed inset-x-0 bottom-0 z-1000 flex justify-center p-3 sm:p-5">
         <div className="pointer-events-auto w-full max-w-xl">
           {loading ? (
             <div className="rounded-3xl bg-white/95 p-5 text-center text-xs font-semibold text-slate-500 shadow-2xl backdrop-blur-md">

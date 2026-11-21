@@ -1059,7 +1059,7 @@ function ViewBooking({ onOpenDispatch, onOpenBayControl }) {
                             onChange={(e) =>
                               setSelectedDriverId(e.target.value)
                             }
-                            className="min-w-[220px] flex-1 rounded-lg border border-gray-300 bg-white px-3 py-2 text-xs text-gray-900 outline-none focus:border-orange-700"
+                            className="min-w-55 flex-1 rounded-lg border border-gray-300 bg-white px-3 py-2 text-xs text-gray-900 outline-none focus:border-orange-700"
                           >
                             <option value="">Select Available Driver...</option>
                             {availableDrivers.map((d) => (
