@@ -507,31 +507,49 @@ function CustomerDashboard() {
   const driverTrackingConfig = useMemo(() => {
     if (!activeBooking?.requiresPickup) return null;
     const driverCoords = activePickup?.driverLiveLocation?.coordinates || null;
+    const driverName = activeDriver?.name || "Driver";
 
+    if (activePickupStatus === "Driver Assigned") {
+      return {
+        active: true,
+        moving: false,
+        direction: "at-workshop",
+        label: "Driver Assigned · At Workshop",
+        routeBadge: "Workshop ➔ Your Location (Assigned)",
+        driverName,
+        coords: driverCoords,
+      };
+    }
     if (activePickupStatus === "En Route to Pickup") {
       return {
         active: true,
+        moving: true,
         direction: "to-customer",
-        label: "Driver En Route to You",
-        driverName: activeDriver?.name || "Driver",
+        label: "Driver Coming to You",
+        routeBadge: "Workshop ➔ Your Location",
+        driverName,
         coords: driverCoords,
       };
     }
     if (activePickupStatus === "Vehicle Picked Up") {
       return {
         active: true,
+        moving: true,
         direction: "to-workshop",
-        label: "Heading to Workshop",
-        driverName: activeDriver?.name || "Driver",
+        label: "Taking Vehicle to Workshop",
+        routeBadge: "Your Location ➔ Workshop",
+        driverName,
         coords: driverCoords,
       };
     }
     if (activePickupStatus === "Out for Return Delivery") {
       return {
         active: true,
+        moving: true,
         direction: "returning",
         label: "Returning Your Vehicle",
-        driverName: activeDriver?.name || "Driver",
+        routeBadge: "Workshop ➔ Your Location (Return)",
+        driverName,
         coords: driverCoords,
       };
     }
@@ -542,6 +560,12 @@ function CustomerDashboard() {
     Array.isArray(activeBooking?.pickupLocation?.coordinates) &&
     activeBooking.pickupLocation.coordinates.length === 2
       ? activeBooking.pickupLocation.coordinates
+      : null;
+
+  const workshopMapCoords =
+    Array.isArray(activePickup?.deliveryLocation?.coordinates) &&
+    activePickup.deliveryLocation.coordinates.length === 2
+      ? activePickup.deliveryLocation.coordinates
       : null;
 
   const notificationBellControl = (
@@ -1241,13 +1265,31 @@ function CustomerDashboard() {
                                   : "Service Route & Workshop Location"}
                             </h3>
                             {driverTrackingConfig?.label && (
-                              <p className="text-xs font-medium text-emerald-700">
-                                {driverTrackingConfig.driverName} ·{" "}
-                                {driverTrackingConfig.label}
+                              <p className="text-xs font-medium text-slate-600">
+                                <strong className="text-[#13294b]">
+                                  {driverTrackingConfig.driverName}
+                                </strong>{" "}
+                                · {driverTrackingConfig.label}
                               </p>
                             )}
                           </div>
-                          {!driverTrackingConfig && (
+                          {driverTrackingConfig?.routeBadge ? (
+                            <span
+                              className={`rounded-full px-3 py-1 text-[11px] font-bold ${
+                                driverTrackingConfig.direction === "returning"
+                                  ? "bg-emerald-100 text-emerald-900"
+                                  : driverTrackingConfig.direction ===
+                                      "to-customer"
+                                    ? "bg-indigo-100 text-indigo-900"
+                                    : driverTrackingConfig.direction ===
+                                        "to-workshop"
+                                      ? "bg-orange-100 text-orange-900"
+                                      : "bg-slate-100 text-slate-800"
+                              }`}
+                            >
+                              {driverTrackingConfig.routeBadge}
+                            </span>
+                          ) : (
                             <button
                               type="button"
                               onClick={handleResetMap}
@@ -1258,13 +1300,15 @@ function CustomerDashboard() {
                           )}
                         </div>
 
-                        <div className="relative mx-auto w-full [&_input]:text-xs sm:[&_input]:text-sm [&_.smart-map-container]:gap-2.5! [&_.smart-map-container>div:nth-of-type(2)]:h-64!">
+                        <div className="relative mx-auto w-full [&_input]:text-xs sm:[&_input]:text-sm [&_.smart-map-container]:gap-2.5!">
                           <SmartMap
                             resetTrigger={resetCount}
                             shopCoords={[6.9271, 79.8612]}
                             externalStartPoint={pickupMapCoords}
+                            externalEndPoint={workshopMapCoords}
                             driverTracking={driverTrackingConfig}
                             readOnlyRoute={Boolean(driverTrackingConfig)}
+                            mapHeight="310px"
                             mode="routing"
                             theme="light"
                             showSearchBox={!driverTrackingConfig}
